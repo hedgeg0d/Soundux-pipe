@@ -42,6 +42,17 @@ namespace Soundux::Objects
         auto path = std::filesystem::canonical("/proc/self/exe").parent_path() / "dist" / "index.html";
         std::filesystem::path iconPath;
 
+#if !defined(IS_EMBEDDED)
+        //* Installations without a launcher keep the frontend in the data directory instead of
+        //* next to the binary, so look there as well
+        if (!std::filesystem::exists(path))
+        {
+#ifdef SOUNDUX_DATA_DIR
+            path = std::filesystem::path(SOUNDUX_DATA_DIR) / "dist" / "index.html";
+#endif
+        }
+#endif
+
         if (std::filesystem::exists("/app/share/icons/hicolor/256x256/apps/io.github.Soundux.png"))
         {
             iconPath = "/app/share/icons/hicolor/256x256/apps/io.github.Soundux.png";

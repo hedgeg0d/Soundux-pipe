@@ -181,6 +181,13 @@ To start the program
 ```sh
 ./soundux # .\soundux.exe on Windows
 ```
+To install into the system directories instead of `/opt/soundux`
+(this is what packages should use, it needs no launcher next to the binary)
+```sh
+cmake .. -DCMAKE_INSTALL_PREFIX=/usr -DSYSTEM_INSTALL=ON
+cmake --build . --config Release
+sudo cmake --install .
+```
 
 ## 🖥️ Install
 
