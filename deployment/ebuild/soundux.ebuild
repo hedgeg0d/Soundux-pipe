@@ -22,7 +22,14 @@ DEPEND="
     x11-base/xorg-server
     x11-libs/gtk+:3
 "
-RDEPEND="${DEPEND}"
+RDEPEND="
+    dev-libs/libappindicator:3
+    dev-libs/openssl
+    || ( media-video/pipewire media-sound/pulseaudio )
+    net-libs/webkit-gtk:4
+    x11-base/xorg-server
+    x11-libs/gtk+:3
+"
 
 S="${WORKDIR}/Soundux"
 

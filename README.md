@@ -84,7 +84,8 @@ These are required to run the program
 
 ## 🐧 Linux
 Please refer to your distro instructions on how to install
-- [pulseaudio](https://gitlab.freedesktop.org/pulseaudio/pulseaudio) / [pipewire](https://pipewire.org/) >= 0.3.26
+- [pipewire](https://pipewire.org/) >= 0.3.26 — used natively (recommended)
+- [pulseaudio](https://gitlab.freedesktop.org/pulseaudio/pulseaudio) — fallback if pipewire is not available
 - Xorg
 - Libwnck3 (optional, for icon support)
 - Webkit2gtk
@@ -137,8 +138,8 @@ Download our installer or portable from [the latest release](https://github.com/
 
 ### 🐧 Linux
 - Webkit2gtk
-- PulseAudio development headers
 - PipeWire development headers
+- PulseAudio development headers (for the fallback backend)
 - X11 client-side development headers
 - libappindicator3 development headers
 - OpenSSL development headers

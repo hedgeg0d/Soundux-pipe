@@ -10,6 +10,10 @@
 #include <string>
 #include <var_guard.hpp>
 
+#if defined(__linux__)
+#include <helper/audio/linux/pipewire/playback.hpp>
+#endif
+
 namespace Soundux
 {
     namespace Objects
@@ -28,6 +32,9 @@ namespace Soundux
             {
                 std::atomic<ma_device *> device;
                 std::atomic<ma_decoder *> decoder;
+#if defined(__linux__)
+                std::atomic<void *> pipeWireStream;
+#endif
             } raw;
 
             std::uint64_t length = 0;
@@ -53,13 +60,25 @@ namespace Soundux
         {
             sxl::var_guard<std::map<std::uint32_t, std::shared_ptr<PlayingSound>>, std::recursive_mutex> playingSounds;
 
-            void onFinished(PlayingSound);
+#if defined(__linux__)
+            std::unique_ptr<PipeWirePlayback> pipeWirePlayback;
+            bool nativePipeWire = false;
+#endif
+
             void onSoundSeeked(PlayingSound *, std::uint64_t);
             void onSoundProgressed(PlayingSound *, std::uint64_t);
+            void destroyPlayback(PlayingSound &sound);
+            void setPlaybackActive(PlayingSound &sound, bool active);
 
             static void data_callback(ma_device *device, void *output, const void *input, std::uint32_t frameCount);
 
           public:
+            //* Decodes the next frames of a sound into the buffer, handles seeking and repeating
+            std::uint32_t pump(PlayingSound *sound, void *output, std::uint32_t frameCount);
+            void setVolume(const std::uint32_t &soundId, float volume);
+
+            void onFinished(PlayingSound);
+
             std::optional<PlayingSound> pause(const std::uint32_t &);
             std::optional<PlayingSound> resume(const std::uint32_t &);
             std::optional<PlayingSound> repeat(const std::uint32_t &, bool);

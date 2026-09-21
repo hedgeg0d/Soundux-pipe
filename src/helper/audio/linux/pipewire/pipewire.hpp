@@ -1,21 +1,19 @@
+#pragma once
 #if defined(__linux__)
 #include "../backend.hpp"
 #include <map>
+#include <memory>
 #include <optional>
+#include <set>
+#include <string>
+#include <vector>
 #include <var_guard.hpp>
 
 #include <pipewire/extensions/metadata.h>
-#include <pipewire/global.h>
+#include <pipewire/impl-module.h>
 #include <pipewire/pipewire.h>
 #include <spa/param/props.h>
 #include <spa/pod/builder.h>
-
-// TODO(pipewire):
-//* From the pipewire news of 0.3.26
-//*   - The link factory can now also make links between nodes and
-//*     ports by name so that it can be used in scripts.
-//*
-//* Maybe we could try to make use of that, it could reduce loc.
 
 namespace Soundux
 {
@@ -31,34 +29,44 @@ namespace Soundux
 
         struct Port
         {
-            std::uint32_t id;
-            std::string portAlias;
-            spa_direction direction;
+            std::uint32_t id = 0;
+            std::string name;
+            spa_direction direction = SPA_DIRECTION_INPUT;
             Side side = Side::UNDEFINED;
             std::uint32_t parentNode = 0;
+
+            static Side sideOf(const std::string &name);
         };
 
         struct Node
         {
-            std::uint32_t id;
+            std::uint32_t id = 0;
             std::string name;
-            std::uint32_t pid;
+            std::uint32_t pid = 0;
             std::string rawName;
             bool isMonitor = false;
+            std::string mediaClass;
             std::string applicationBinary;
-            std::map<std::uint32_t, Port> ports;
+            std::uint32_t clientId = 0;
+        };
+
+        //* Application properties (like application.process.binary) are only available on the bound client object
+        struct Client
+        {
+            std::string binary;
+            bool resolved = false;
         };
 
         struct PipeWirePlaybackApp : public PlaybackApp
         {
-            std::uint32_t pid;
-            std::uint32_t nodeId;
+            std::uint32_t pid = 0;
+            std::uint32_t nodeId = 0;
             ~PipeWirePlaybackApp() override = default;
         };
         struct PipeWireRecordingApp : public RecordingApp
         {
-            std::uint32_t pid;
-            std::uint32_t nodeId;
+            std::uint32_t pid = 0;
+            std::uint32_t nodeId = 0;
             ~PipeWireRecordingApp() override = default;
         };
 
@@ -67,34 +75,85 @@ namespace Soundux
             friend class AudioBackend;
 
           private:
-            pw_core *core;
-            pw_main_loop *loop;
-            pw_context *context;
-            pw_registry *registry;
+            //* RAII wrapper around the thread loop lock, every public method has to hold it.
+            class Lock
+            {
+                pw_thread_loop *loop;
+
+              public:
+                explicit Lock(pw_thread_loop *loop);
+                ~Lock();
+                Lock(const Lock &) = delete;
+                Lock &operator=(const Lock &) = delete;
+            };
+
+            pw_thread_loop *loop = nullptr;
+            pw_context *context = nullptr;
+            pw_core *core = nullptr;
+            pw_registry *registry = nullptr;
             std::uint32_t version = 0;
-            std::string defaultMicrophone;
 
-            spa_hook registryListener;
-            pw_registry_events registryEvents;
+            spa_hook registryListener{};
+            pw_registry_events registryEvents{};
+            spa_hook coreListener{};
+            pw_core_events coreEvents{};
+            spa_hook metadataListener{};
+            pw_metadata_events metadataEvents{};
+            pw_metadata *defaultMetadata = nullptr;
+            std::uint32_t metadataId = 0;
 
-          private:
+            //* Name of the source we capture the microphone from and the current/saved values of the default metadata
+            std::string defaultSource;
+            std::string defaultSourceValue;
+            std::string configuredSourceValue;
+            std::string savedSourceValue;
+
+            pw_proxy *sinkProxy = nullptr;
+
+            //* Our virtual devices
+            pw_impl_module *micLoopback = nullptr;
+            pw_impl_module *virtualSource = nullptr;
+            bool usingAsDefault = false;
+
             sxl::var_guard<std::map<std::uint32_t, Node>> nodes;
             sxl::var_guard<std::map<std::uint32_t, Port>> ports;
+            sxl::var_guard<std::map<std::uint32_t, Client>> clients;
 
-            void onNodeInfo(const pw_node_info *);
-            void onPortInfo(const pw_port_info *);
-            void onCoreInfo(const pw_core_info *);
-
-          private:
-            std::map<std::string, std::vector<std::uint32_t>> soundInputLinks;
+            //* Links we created, so that we can clean them up again
+            std::map<std::uint32_t, pw_proxy *> linkProxies;
             std::map<std::string, std::vector<std::uint32_t>> passthroughLinks;
 
+            //* Nodes that we moved to our sink, per application
+            std::map<std::string, std::vector<std::uint32_t>> soundInputNodes;
+
           private:
+            //* All of these expect the lock to be held
             void sync();
             bool createNullSink();
-            bool deleteLink(std::uint32_t);
-            std::optional<int> linkPorts(std::uint32_t, std::uint32_t);
+            bool createMicLoopback();
+            bool createVirtualSource();
+            void removeVirtualSource();
+            bool setMetadataValue(const std::string &key, const std::string &value);
+            bool removeMetadataValue(const std::string &key);
+            //* Moves a node to the given target by setting its metadata, this is what the pulse backend did with
+            //* its move calls. The session manager then relinks the node (including format conversion) for us.
+            bool setNodeTarget(std::uint32_t nodeId, const std::string &target);
+            bool clearNodeTarget(std::uint32_t nodeId);
+            bool setNodeMute(std::uint32_t nodeId, bool mute);
+            bool deleteLink(std::uint32_t id);
+            std::optional<std::uint32_t> linkPorts(std::uint32_t outputPort, std::uint32_t inputPort);
+            std::vector<Port> portsOf(std::uint32_t nodeId, std::optional<spa_direction> direction);
+            std::optional<std::uint32_t> findNodeByName(const std::string &name);
+            std::string firstRealSource();
+            std::string applicationOf(const Node &node);
+            bool createLinksFor(const std::string &application);
+            bool routeToSoundInput(const std::string &application);
+            static bool sidesMatch(Side a, Side b);
+            static bool isInternalNode(const Node &node);
 
+            void onCoreInfo(const pw_core_info *);
+
+            static int onMetadataProperty(void *, std::uint32_t, const char *, const char *, const char *);
             static void onGlobalRemoved(void *, std::uint32_t);
             static void onGlobalAdded(void *, std::uint32_t, std::uint32_t, const char *, std::uint32_t,
                                       const spa_dict *);

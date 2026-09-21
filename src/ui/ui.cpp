@@ -542,8 +542,9 @@ namespace Soundux::Objects
             {
                 if (playingSound.sound.id == sound->get().id && playingSound.playbackDevice.isDefault)
                 {
-                    playingSound.raw.device.load()->masterVolumeFactor =
-                        static_cast<float>(localVolume ? *localVolume : Globals::gSettings.localVolume) / 100.f;
+                    Globals::gAudio.setVolume(
+                        playingSound.id,
+                        static_cast<float>(localVolume ? *localVolume : Globals::gSettings.localVolume) / 100.f);
                 }
             }
 
@@ -566,8 +567,9 @@ namespace Soundux::Objects
             {
                 if (playingSound.sound.id == sound->get().id && !playingSound.playbackDevice.isDefault)
                 {
-                    playingSound.raw.device.load()->masterVolumeFactor =
-                        static_cast<float>(remoteVolume ? *remoteVolume : Globals::gSettings.remoteVolume) / 100.f;
+                    Globals::gAudio.setVolume(
+                        playingSound.id,
+                        static_cast<float>(remoteVolume ? *remoteVolume : Globals::gSettings.remoteVolume) / 100.f);
                 }
             }
 
@@ -601,7 +603,7 @@ namespace Soundux::Objects
                     newVolume = sound.remoteVolume ? *sound.remoteVolume : Globals::gSettings.remoteVolume;
                 }
 
-                playingSound.raw.device.load()->masterVolumeFactor = static_cast<float>(newVolume) / 100.f;
+                Globals::gAudio.setVolume(playingSound.id, static_cast<float>(newVolume) / 100.f);
             }
         }
 

@@ -14,10 +14,44 @@ namespace Soundux::Objects
     using Soundux::Helpers::widen;
 #endif
 
+#if defined(__linux__)
+    constexpr const char *NULL_SINK_NAME = "soundux_sink";
+#endif
+
     void Audio::setup()
     {
 #if defined(__linux__)
         nullSink = std::nullopt;
+
+        if (pipeWirePlayback)
+        {
+            pipeWirePlayback->destroy();
+            pipeWirePlayback.reset();
+        }
+        nativePipeWire = false;
+
+        if (Globals::gSettings.audioBackend == Enums::BackendType::PipeWire)
+        {
+            auto playback = std::make_unique<PipeWirePlayback>();
+            if (playback->setup())
+            {
+                pipeWirePlayback = std::move(playback);
+                nativePipeWire = true;
+
+                defaultPlayback = AudioDevice{};
+                defaultPlayback.name = "default";
+                defaultPlayback.isDefault = true;
+
+                nullSink = AudioDevice{};
+                nullSink->name = NULL_SINK_NAME;
+                nullSink->isDefault = false;
+
+                Fancy::fancy.logTime().message() << "Using native pipewire playback" << std::endl;
+                return;
+            }
+
+            Fancy::fancy.logTime().failure() << "Failed to setup native pipewire playback" << std::endl;
+        }
 #endif
         for (const auto &device : getAudioDevices())
         {
@@ -26,7 +60,7 @@ namespace Soundux::Objects
                 defaultPlayback = device;
             }
 #if defined(__linux__)
-            if (device.name == "soundux_sink")
+            if (device.name == NULL_SINK_NAME)
             {
                 nullSink = device;
             }
@@ -36,6 +70,15 @@ namespace Soundux::Objects
     void Audio::destroy()
     {
         stopAll();
+
+#if defined(__linux__)
+        if (pipeWirePlayback)
+        {
+            pipeWirePlayback->destroy();
+            pipeWirePlayback.reset();
+        }
+        nativePipeWire = false;
+#endif
     }
     std::optional<PlayingSound> Audio::play(const Objects::Sound &sound,
                                             const std::optional<Objects::AudioDevice> &playbackDevice)
@@ -58,19 +101,53 @@ namespace Soundux::Objects
             return std::nullopt;
         }
 
-        auto *device = new ma_device;
-        auto config = ma_device_config_init(ma_device_type_playback);
-
         ma_uint64 length_in_pcm_frames{};
         ma_decoder_get_length_in_pcm_frames(decoder, &length_in_pcm_frames);
+
+        const auto volume = playbackDevice
+                                ? (sound.remoteVolume ? *sound.remoteVolume : Globals::gSettings.remoteVolume)
+                                : (sound.localVolume ? *sound.localVolume : Globals::gSettings.localVolume);
+
+        auto pSound = std::make_shared<PlayingSound>();
+        auto soundId = ++id;
+
+        pSound->id = soundId;
+        pSound->sound = sound;
+        pSound->raw.decoder = decoder;
+        pSound->length = length_in_pcm_frames;
+        pSound->sampleRate = decoder->outputSampleRate;
+        pSound->playbackDevice = playbackDevice ? *playbackDevice : defaultPlayback;
+        pSound->lengthInMs = static_cast<std::uint64_t>(static_cast<double>(pSound->length) /
+                                                        static_cast<double>(pSound->sampleRate) * 1000);
+
+#if defined(__linux__)
+        if (nativePipeWire)
+        {
+            auto *stream = pipeWirePlayback->start(pSound.get(), playbackDevice ? NULL_SINK_NAME : "",
+                                                   static_cast<float>(volume) / 100.F);
+            if (!stream)
+            {
+                Fancy::fancy.logTime().warning() << "Failed to play sound " << sound.path << std::endl;
+                ma_decoder_uninit(decoder);
+                delete decoder;
+
+                return std::nullopt;
+            }
+
+            pSound->raw.pipeWireStream = stream;
+            playingSounds->emplace(soundId, pSound);
+            return *pSound;
+        }
+#endif
+
+        auto *device = new ma_device;
+        auto config = ma_device_config_init(ma_device_type_playback);
 
         config.dataCallback = data_callback;
         config.periodSizeInMilliseconds = 100;
         config.sampleRate = decoder->outputSampleRate;
         config.playback.format = decoder->outputFormat;
         config.playback.channels = decoder->outputChannels;
-
-        auto pSound = std::make_shared<PlayingSound>();
         config.pUserData = reinterpret_cast<void *>(static_cast<PlayingSound *>(pSound.get()));
 
         if (playbackDevice)
@@ -92,28 +169,7 @@ namespace Soundux::Objects
             return std::nullopt;
         }
 
-        if (playbackDevice)
-        {
-            if (sound.remoteVolume)
-            {
-                device->masterVolumeFactor = static_cast<float>(*sound.remoteVolume) / 100.f;
-            }
-            else
-            {
-                device->masterVolumeFactor = static_cast<float>(Globals::gSettings.remoteVolume) / 100.f;
-            }
-        }
-        else
-        {
-            if (sound.localVolume)
-            {
-                device->masterVolumeFactor = static_cast<float>(*sound.localVolume) / 100.f;
-            }
-            else
-            {
-                device->masterVolumeFactor = static_cast<float>(Globals::gSettings.localVolume) / 100.f;
-            }
-        }
+        device->masterVolumeFactor = static_cast<float>(volume) / 100.f;
 
         if (ma_device_start(device) != MA_SUCCESS)
         {
@@ -128,17 +184,7 @@ namespace Soundux::Objects
             return std::nullopt;
         }
 
-        auto soundId = ++id;
-
-        pSound->id = soundId;
-        pSound->sound = sound;
         pSound->raw.device = device;
-        pSound->raw.decoder = decoder;
-        pSound->length = length_in_pcm_frames;
-        pSound->sampleRate = config.sampleRate;
-        pSound->playbackDevice = playbackDevice ? *playbackDevice : defaultPlayback;
-        pSound->lengthInMs = static_cast<std::uint64_t>(static_cast<double>(pSound->length) /
-                                                        static_cast<double>(config.sampleRate) * 1000);
 
         playingSounds->emplace(soundId, pSound);
         return *pSound;
@@ -149,14 +195,7 @@ namespace Soundux::Objects
         while (!scoped->empty())
         {
             auto &sound = scoped->begin()->second;
-            if (sound->raw.device && sound->raw.decoder)
-            {
-                ma_device_uninit(sound->raw.device);
-                ma_decoder_uninit(sound->raw.decoder);
-            }
-
-            sound->raw.device = nullptr;
-            sound->raw.decoder = nullptr;
+            destroyPlayback(*sound);
 
             scoped->erase(sound->id);
         }
@@ -167,14 +206,7 @@ namespace Soundux::Objects
         if (scoped->find(soundId) != scoped->end())
         {
             auto &sound = scoped->at(soundId);
-            if (sound->raw.device && sound->raw.decoder)
-            {
-                ma_device_uninit(sound->raw.device);
-                ma_decoder_uninit(sound->raw.decoder);
-            }
-
-            sound->raw.device = nullptr;
-            sound->raw.decoder = nullptr;
+            destroyPlayback(*sound);
 
             scoped->erase(sound->id);
             return true;
@@ -193,10 +225,7 @@ namespace Soundux::Objects
 
             if (!sound->paused)
             {
-                if (ma_device_get_state(sound->raw.device) == ma_device_state_started)
-                {
-                    ma_device_stop(sound->raw.device);
-                }
+                setPlaybackActive(*sound, false);
                 sound->paused = true;
             }
 
@@ -231,10 +260,7 @@ namespace Soundux::Objects
 
             if (sound->paused)
             {
-                if (ma_device_get_state(sound->raw.device) == ma_device_state_stopped)
-                {
-                    ma_device_start(sound->raw.device);
-                }
+                setPlaybackActive(*sound, true);
                 sound->paused = false;
             }
 
@@ -250,11 +276,7 @@ namespace Soundux::Objects
         auto scoped = playingSounds.scoped();
         if (scoped->find(sound.id) != scoped->end())
         {
-            ma_device_uninit(sound.raw.device);
-            ma_decoder_uninit(sound.raw.decoder);
-
-            sound.raw.device = nullptr;
-            sound.raw.decoder = nullptr;
+            destroyPlayback(sound);
 
             Globals::gGui->onSoundFinished(sound);
             scoped->erase(sound.id);
@@ -311,18 +333,98 @@ namespace Soundux::Objects
                                          << std::endl;
         return std::nullopt;
     }
-    void Audio::data_callback(ma_device *device, void *output, [[maybe_unused]] const void *input,
-                              std::uint32_t frameCount)
+    void Audio::destroyPlayback(PlayingSound &sound)
     {
-        auto *sound = reinterpret_cast<PlayingSound *>(device->pUserData);
-        if (!sound)
+#if defined(__linux__)
+        if (nativePipeWire)
+        {
+            if (sound.raw.pipeWireStream)
+            {
+                pipeWirePlayback->stop(static_cast<PipeWirePlayback::Stream *>(sound.raw.pipeWireStream.load()));
+                sound.raw.pipeWireStream = nullptr;
+            }
+
+            if (sound.raw.decoder)
+            {
+                ma_decoder_uninit(sound.raw.decoder);
+                sound.raw.decoder = nullptr;
+            }
+            return;
+        }
+#endif
+        if (sound.raw.device)
+        {
+            ma_device_uninit(sound.raw.device);
+            sound.raw.device = nullptr;
+        }
+
+        if (sound.raw.decoder)
+        {
+            ma_decoder_uninit(sound.raw.decoder);
+            sound.raw.decoder = nullptr;
+        }
+    }
+    void Audio::setPlaybackActive(PlayingSound &sound, bool active)
+    {
+#if defined(__linux__)
+        if (nativePipeWire)
+        {
+            if (sound.raw.pipeWireStream)
+            {
+                pipeWirePlayback->setActive(static_cast<PipeWirePlayback::Stream *>(sound.raw.pipeWireStream.load()),
+                                            active);
+            }
+            return;
+        }
+#endif
+        if (!sound.raw.device)
         {
             return;
         }
 
-        if (!sound->raw.decoder)
+        if (active)
+        {
+            if (ma_device_get_state(sound.raw.device) == ma_device_state_stopped)
+            {
+                ma_device_start(sound.raw.device);
+            }
+        }
+        else if (ma_device_get_state(sound.raw.device) == ma_device_state_started)
+        {
+            ma_device_stop(sound.raw.device);
+        }
+    }
+    void Audio::setVolume(const std::uint32_t &soundId, float volume)
+    {
+        auto scoped = playingSounds.scoped();
+        if (scoped->find(soundId) == scoped->end())
         {
             return;
+        }
+
+        auto &sound = scoped->at(soundId);
+
+#if defined(__linux__)
+        if (nativePipeWire)
+        {
+            if (sound->raw.pipeWireStream)
+            {
+                pipeWirePlayback->setVolume(static_cast<PipeWirePlayback::Stream *>(sound->raw.pipeWireStream.load()),
+                                            volume);
+            }
+            return;
+        }
+#endif
+        if (sound->raw.device)
+        {
+            sound->raw.device.load()->masterVolumeFactor = volume;
+        }
+    }
+    std::uint32_t Audio::pump(PlayingSound *sound, void *output, std::uint32_t frameCount)
+    {
+        if (!sound || !sound->raw.decoder)
+        {
+            return 0;
         }
 
         ma_uint64 readFrames{};
@@ -338,18 +440,27 @@ namespace Soundux::Objects
             Globals::gAudio.onSoundProgressed(sound, readFrames);
         }
 
-        if (readFrames <= 0)
+        if (readFrames <= 0 && sound->repeat)
         {
-            if (sound->repeat)
-            {
-                ma_decoder_seek_to_pcm_frame(sound->raw.decoder, 0);
-                Globals::gAudio.onSoundSeeked(sound, 0);
-            }
-            else
-            {
-                Globals::gQueue.push_unique(reinterpret_cast<std::uintptr_t>(device),
-                                            [sound = *sound] { Globals::gAudio.onFinished(sound); });
-            }
+            ma_decoder_seek_to_pcm_frame(sound->raw.decoder, 0);
+            Globals::gAudio.onSoundSeeked(sound, 0);
+        }
+
+        return static_cast<std::uint32_t>(readFrames);
+    }
+    void Audio::data_callback(ma_device *device, void *output, [[maybe_unused]] const void *input,
+                              std::uint32_t frameCount)
+    {
+        auto *sound = reinterpret_cast<PlayingSound *>(device->pUserData);
+        if (!sound || !sound->raw.decoder)
+        {
+            return;
+        }
+
+        if (Globals::gAudio.pump(sound, output, frameCount) == 0 && !sound->repeat)
+        {
+            Globals::gQueue.push_unique(reinterpret_cast<std::uintptr_t>(device),
+                                        [sound = *sound] { Globals::gAudio.onFinished(sound); });
         }
     }
     std::vector<AudioDevice> Audio::getAudioDevices()
@@ -460,6 +571,9 @@ namespace Soundux::Objects
 
         raw.device.store(other.raw.device);
         raw.decoder.store(other.raw.decoder);
+#if defined(__linux__)
+        raw.pipeWireStream.store(other.raw.pipeWireStream);
+#endif
         playbackDevice = other.playbackDevice;
     }
     PlayingSound &PlayingSound::operator=(const PlayingSound &other)
@@ -486,6 +600,9 @@ namespace Soundux::Objects
 
         raw.device.store(other.raw.device);
         raw.decoder.store(other.raw.decoder);
+#if defined(__linux__)
+        raw.pipeWireStream.store(other.raw.pipeWireStream);
+#endif
         playbackDevice = other.playbackDevice;
 
         return *this;

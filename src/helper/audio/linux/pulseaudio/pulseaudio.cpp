@@ -1,10 +1,12 @@
 #if defined(__linux__)
 #include "pulseaudio.hpp"
 #include "forward.hpp"
+#include <chrono>
 #include <core/global/globals.hpp>
 #include <cstring>
 #include <exception>
 #include <fancy.hpp>
+#include <thread>
 
 namespace Soundux::Objects
 {
@@ -47,9 +49,22 @@ namespace Soundux::Objects
             },
             &data);
 
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
         while (!data.first)
         {
-            PulseApi::mainloop_iterate(mainloop, true, nullptr);
+            if (PulseApi::mainloop_iterate(mainloop, false, nullptr) < 0)
+            {
+                Fancy::fancy.logTime().failure() << "Failed to iterate pulseaudio mainloop" << std::endl;
+                return false;
+            }
+
+            if (std::chrono::steady_clock::now() > deadline)
+            {
+                Fancy::fancy.logTime().failure() << "Timed out while connecting to pulseaudio" << std::endl;
+                return false;
+            }
+
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
         }
 
         if (!data.second)
@@ -178,9 +193,22 @@ namespace Soundux::Objects
     void PulseAudio::await(pa_operation *operation)
     {
         std::lock_guard lock(operationMutex);
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
         while (PulseApi::operation_get_state(operation) != PA_OPERATION_DONE)
         {
-            PulseApi::mainloop_iterate(mainloop, true, nullptr);
+            if (PulseApi::mainloop_iterate(mainloop, false, nullptr) < 0)
+            {
+                Fancy::fancy.logTime().failure() << "Failed to iterate pulseaudio mainloop" << std::endl;
+                return;
+            }
+
+            if (std::chrono::steady_clock::now() > deadline)
+            {
+                Fancy::fancy.logTime().failure() << "Timed out while waiting for pulseaudio operation" << std::endl;
+                return;
+            }
+
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
         }
     }
     void PulseAudio::fetchDefaultSource()

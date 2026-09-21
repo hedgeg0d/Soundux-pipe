@@ -1,6 +1,5 @@
 #if defined(__linux__)
 #include "forward.hpp"
-#include <core/global/globals.hpp>
 #include <dlfcn.h>
 #include <exception>
 #include <fancy.hpp>
@@ -18,19 +17,16 @@ template <typename T> void loadFunc(void *so, T &function, const std::string &na
 
 bool Soundux::PipeWireApi::setup()
 {
-    auto *libpulse = dlopen("libpipewire-0.3.so.0", RTLD_LAZY);
-    if (libpulse)
+    auto *libpipewire = dlopen("libpipewire-0.3.so.0", RTLD_LAZY);
+    if (libpipewire)
     {
         try
         {
 #define stringify(what) #what
-#define load(name) loadFunc(libpulse, name, stringify(pw_##name))
+#define load(name) loadFunc(libpipewire, name, stringify(pw_##name))
             load(init);
             load(context_new);
-            load(main_loop_run);
-            load(main_loop_new);
             load(proxy_destroy);
-            load(main_loop_quit);
             load(properties_new);
             load(properties_set);
             load(context_connect);
@@ -38,9 +34,36 @@ bool Soundux::PipeWireApi::setup()
             load(context_destroy);
             load(properties_free);
             load(core_disconnect);
-            load(main_loop_destroy);
-            load(main_loop_get_loop);
             load(proxy_add_listener);
+
+            //* Thread loop
+            load(thread_loop_new);
+            load(thread_loop_get_loop);
+            load(thread_loop_start);
+            load(thread_loop_stop);
+            load(thread_loop_destroy);
+            load(thread_loop_lock);
+            load(thread_loop_unlock);
+            load(thread_loop_wait);
+            load(thread_loop_signal);
+
+            //* Streams
+            load(stream_new_simple);
+            load(stream_destroy);
+            load(stream_add_listener);
+            load(stream_connect);
+            load(stream_disconnect);
+            load(stream_set_active);
+            load(stream_dequeue_buffer);
+            load(stream_queue_buffer);
+            load(stream_get_time_n);
+            load(stream_set_control);
+            load(stream_flush);
+            load(stream_update_params);
+
+            //* Modules
+            load(context_load_module);
+            load(impl_module_destroy);
             return true;
         }
         catch (std::exception &e)
