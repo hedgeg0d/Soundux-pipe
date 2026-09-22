@@ -1,0 +1,169 @@
+name: Build from latest commit
+
+on:
+  push:
+    branches: [master]
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build on Arch Linux
+    runs-on: ubuntu-latest
+    container: archlinux:latest
+
+    steps:
+      - name: Install build dependencies
+        run: |
+          pacman -Sy --noconfirm --needed archlinux-keyring
+          pacman -Syu --noconfirm --needed base-devel git cmake ninja pkgconf \
+            gtk3 webkit2gtk-4.1 libappindicator libwnck3 \
+            libx11 libxi libxtst libice libsm openssl pipewire libpulse
+
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Configure
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build
+
+      - name: Package the program
+        run: |
+          mkdir -p package/soundux
+          cp build/soundux package/soundux/
+          cp -r build/dist package/soundux/dist
+          cp deployment/soundux.desktop LICENSE README.md package/soundux/
+          {
+            echo "Extract this folder and start the soundboard with ./soundux"
+            echo
+            echo "Built from commit $GITHUB_SHA"
+            echo
+            echo "It needs the runtime libraries of a current system, on Arch Linux:"
+            echo "  gtk3 webkit2gtk-4.1 libappindicator libsoup3 openssl libx11 libxi libxtst"
+            echo "and for audio either pipewire or libpulse."
+            echo
+            echo "To send sounds into other applications, pick them in the outputs of the"
+            echo "settings, or select the monitor of soundux_sink as the microphone there."
+          } > package/soundux/RUNNING.txt
+          tar -C package -czf soundux-linux-x86_64.tar.gz soundux
+
+      - name: Package for Arch
+        shell: bash
+        run: |
+          SOURCES="$GITHUB_WORKSPACE"
+          VERSION="0.2.8.g${GITHUB_SHA:0:7}"
+
+          mkdir -p "$SOURCES/packaging"
+          cd "$SOURCES/packaging"
+
+          #* Take the dependencies and the description from the AUR recipe, but build
+          #* the sources that are checked out instead of downloading a tag
+          unset -f prepare build package 2>/dev/null || true
+          source "$SOURCES/deployment/aur/PKGBUILD"
+          emit() { declare -p "$1" | sed 's/^declare -a [a-zA-Z_]*=//'; }
+
+          {
+            printf 'pkgname=%s\n' "$pkgname"
+            printf 'pkgver=%s\n' "$VERSION"
+            printf 'pkgrel=%s\n' "$pkgrel"
+            printf 'pkgdesc=%s\n' "$(printf '%q' "$pkgdesc")"
+            printf "arch=('x86_64')\n"
+            printf 'url=%s\n' "$url"
+            printf "license=('GPL-3.0-only')\n"
+            printf 'provides=%s\n' "$(emit provides)"
+            printf 'conflicts=%s\n' "$(emit conflicts)"
+            printf 'depends=%s\n' "$(emit depends)"
+            printf 'optdepends=%s\n' "$(emit optdepends)"
+            printf 'source=()\n'
+            printf 'sha256sums=()\n'
+            printf '\nbuild() {\n'
+            printf '  cmake -B "$startdir/build-pkg" -S %s -DCMAKE_BUILD_TYPE=Release' "$SOURCES"
+            printf ' -DCMAKE_INSTALL_PREFIX=/usr -DSYSTEM_INSTALL=ON\n'
+            printf '  cmake --build "$startdir/build-pkg"\n}\n'
+            printf '\npackage() {\n'
+            printf '  DESTDIR="$pkgdir" cmake --install "$startdir/build-pkg"\n'
+            printf '  rm -rf "$pkgdir/usr/include" "$pkgdir/usr/share/cmake"\n'
+            printf '  for binary in "$pkgdir"/usr/bin/soundux-*; do\n'
+            printf '    [ -e "$binary" ] && mv -f "$binary" "$pkgdir/usr/bin/soundux"\n'
+            printf '  done\n'
+            printf '  install -Dm644 %s/LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"\n' "$SOURCES"
+            printf '}\n'
+          } > PKGBUILD
+
+          #* makepkg refuses to run as root, which is what containers use
+          useradd -m builder
+          chown -R builder:builder "$SOURCES/build" "$SOURCES/packaging"
+          su builder -c "cd '$SOURCES/packaging' && makepkg --noconfirm"
+
+          for package in ./*.pkg.tar.zst; do
+            case "$package" in *-debug-*) continue ;; esac
+            cp "$package" "$SOURCES/"
+          done
+
+      - name: Upload the tarball
+        uses: actions/upload-artifact@v4
+        with:
+          name: soundux-linux-x86_64
+          path: soundux-linux-x86_64.tar.gz
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Upload the package
+        uses: actions/upload-artifact@v4
+        with:
+          name: soundux-pipewire-arch
+          path: "*.pkg.tar.zst"
+          if-no-files-found: error
+          retention-days: 90
+
+  publish:
+    name: Publish the build
+    runs-on: ubuntu-latest
+    needs: build
+
+    steps:
+      - name: Download the builds
+        uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+
+      - name: Put them into the releases
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            TAG="$GITHUB_REF_NAME"
+            printf -v NOTES 'Automated build of %s\n\nArch package: `sudo pacman -U soundux-pipewire-*.pkg.tar.zst`' "$GITHUB_REF_NAME"
+          else
+            TAG="latest"
+            printf -v NOTES \
+              'Automated build of %s from %s\n\nArch package: `sudo pacman -U soundux-pipewire-*.pkg.tar.zst`\nPortable tarball: unpack and run `./soundux`' \
+              "$GITHUB_SHA" "$(date -u '+%Y-%m-%d %H:%M UTC')"
+          fi
+
+          gh release view "$TAG" >/dev/null 2>&1 ||
+            gh release create "$TAG" --title "$TAG" --notes "$NOTES" --prerelease --target "$GITHUB_SHA"
+
+          #* Keep the rolling tag at the commit that was built
+          if [ "$TAG" = "latest" ]; then
+            gh api "repos/$GITHUB_REPOSITORY/git/refs/tags/$TAG" -X PATCH -f sha="$GITHUB_SHA" -F force=true >/dev/null 2>&1 || true
+          fi
+
+          #* The tarball is replaced by name, but the packages carry the commit in their version
+          gh release view "$TAG" --json assets --jq '.assets[].name' | grep -E '\.pkg\.tar\.zst$' |
+            while read -r asset; do
+              gh release delete-asset "$TAG" "$asset" --yes
+            done
+          gh release upload "$TAG" ./*.pkg.tar.zst ./soundux-linux-x86_64.tar.gz --clobber
+          gh release edit "$TAG" --notes "$NOTES"
+
+          echo "### https://github.com/$GITHUB_REPOSITORY/releases/tag/$TAG" >> "$GITHUB_STEP_SUMMARY"
+          ls -1
