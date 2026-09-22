@@ -81,9 +81,9 @@ endif()
 # [[ webkit2gtk-4.0 was renamed to 4.1, the vendored webview still asks for the old name ]]
 if (UNIX)
     pkg_check_modules(WEBKIT2GTK_41 QUIET webkit2gtk-4.1)
-    pkg_check_modules(WEBKIT2GTK_40 QUIET webkit2gtk-4.0)
 
-    if (WEBKIT2GTK_41_FOUND AND NOT WEBKIT2GTK_40_FOUND)
+    #* Prefer 4.1 whenever it is available, a leftover 4.0 usually is not usable anyway
+    if (WEBKIT2GTK_41_FOUND)
         set(WEBKIT2GTK_COMPAT_DIR "${CMAKE_BINARY_DIR}/webkit2gtk-compat")
         file(WRITE "${WEBKIT2GTK_COMPAT_DIR}/webkit2gtk-4.0.pc"
             "Name: webkit2gtk-4.0\n"
