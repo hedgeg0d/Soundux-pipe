@@ -545,6 +545,9 @@ namespace Soundux::Objects
                     Globals::gAudio.setVolume(
                         playingSound.id,
                         static_cast<float>(localVolume ? *localVolume : Globals::gSettings.localVolume) / 100.f);
+                    Fancy::fancy.logTime().message()
+                        << "Custom local volume for sound " << id << ": "
+                        << (localVolume ? *localVolume : Globals::gSettings.localVolume) << std::endl;
                 }
             }
 
@@ -570,6 +573,9 @@ namespace Soundux::Objects
                     Globals::gAudio.setVolume(
                         playingSound.id,
                         static_cast<float>(remoteVolume ? *remoteVolume : Globals::gSettings.remoteVolume) / 100.f);
+                    Fancy::fancy.logTime().message()
+                        << "Custom remote volume for sound " << id << ": "
+                        << (remoteVolume ? *remoteVolume : Globals::gSettings.remoteVolume) << std::endl;
                 }
             }
 
@@ -585,6 +591,14 @@ namespace Soundux::Objects
     {
         auto oldSettings = Globals::gSettings;
         Globals::gSettings = settings;
+
+        if (settings.localVolume != oldSettings.localVolume || settings.remoteVolume != oldSettings.remoteVolume)
+        {
+            Fancy::fancy.logTime().message()
+                << "Volume change from the interface: local " << oldSettings.localVolume << " -> "
+                << settings.localVolume << ", remote " << oldSettings.remoteVolume << " -> " << settings.remoteVolume
+                << ", playing sounds: " << Globals::gAudio.getPlayingSounds().size() << std::endl;
+        }
 
         if ((settings.localVolume != oldSettings.localVolume || settings.remoteVolume != oldSettings.remoteVolume) &&
             !Globals::gAudio.getPlayingSounds().empty())

@@ -1,3 +1,6 @@
+#include <chrono>
+#include <thread>
+#include <cstdlib>
 #include "webview.hpp"
 #include <core/global/globals.hpp>
 #include <cstdint>
@@ -22,6 +25,12 @@ namespace Soundux::Objects
     void WebView::setup()
     {
         Window::setup();
+
+#if defined(__linux__)
+        //* WebKitGTK sandboxes its web process with bubblewrap, which fails on some setups and takes the
+        //* window down with it. The content we load is our own, so running it without the sandbox is fine.
+        setenv("WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS", "1", 0);
+#endif
 
         webview =
             std::make_shared<Webview::Window>("Soundux", Soundux::Globals::gData.width, Soundux::Globals::gData.height);
@@ -293,8 +302,25 @@ namespace Soundux::Objects
         }));
 #endif
     }
+    namespace
+    {
+        //* Stopping the audio backends can wait for their loops, make sure the process still ends
+        void armShutdownWatchdog()
+        {
+            std::thread([] {
+                std::this_thread::sleep_for(std::chrono::seconds(3));
+                Fancy::fancy.logTime().warning() << "Shutdown did not finish, exiting" << std::endl;
+                std::_Exit(0);
+            }).detach();
+        }
+    } // namespace
+
     bool WebView::onClose()
     {
+        Fancy::fancy.logTime().message()
+            << "Close was requested (minimizeToTray: " << Soundux::Globals::gSettings.minimizeToTray << ")" << std::endl;
+        armShutdownWatchdog();
+
         if (Globals::gSettings.minimizeToTray)
         {
             tray->getEntries().at(1)->setText(translations.show);
@@ -396,7 +422,10 @@ namespace Soundux::Objects
         {
             tray->exit();
         }
-        Fancy::fancy.logTime().message() << "UI exited" << std::endl;
+        Fancy::fancy.logTime().message() << "UI exited (the window was closed or the web view stopped)"
+                                        << std::endl;
+
+        armShutdownWatchdog();
     }
     void WebView::onHotKeyReceived(const std::vector<int> &keys)
     {

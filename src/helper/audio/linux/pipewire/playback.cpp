@@ -140,6 +140,16 @@ namespace Soundux::Objects
         auto *state = new Stream();
         state->sound = sound;
         state->volume = volume;
+        Fancy::fancy.logTime().message()
+            << "Stream started (target: " << (target.empty() ? "default output" : target) << ", format: "
+            << static_cast<int>(decoder->outputFormat) << ", volume: " << volume << ")" << std::endl;
+
+        if (decoder->outputFormat != ma_format_f32 && decoder->outputFormat != ma_format_s16)
+        {
+            Fancy::fancy.logTime().warning()
+                << "The volume cannot be applied to format " << static_cast<int>(decoder->outputFormat)
+                << " of this sound" << std::endl;
+        }
         state->monaural = decoder->outputChannels == 1;
 
         const auto streamChannels = state->monaural ? 2 : decoder->outputChannels;
@@ -292,6 +302,29 @@ namespace Soundux::Objects
         else
         {
             read = Globals::gAudio.pump(state->sound, spaData->data, frames);
+        }
+
+        //* Apply the volume to our own samples, the property on the stream alone does not reach the sound
+        if (state->volume != 1.F && read > 0 &&
+            (decoder->outputFormat == ma_format_f32 || decoder->outputFormat == ma_format_s16))
+        {
+            for (std::uint32_t frame = 0; frame < read; frame++)
+            {
+                auto *frameData = static_cast<std::uint8_t *>(spaData->data) + (frame * bytesPerFrame);
+                for (std::uint32_t channel = 0; channel < streamChannels; channel++)
+                {
+                    auto *sample = frameData + (channel * sampleSize);
+                    if (decoder->outputFormat == ma_format_f32)
+                    {
+                        *reinterpret_cast<float *>(sample) *= state->volume;
+                    }
+                    else
+                    {
+                        *reinterpret_cast<std::int16_t *>(sample) =
+                            static_cast<std::int16_t>(*reinterpret_cast<std::int16_t *>(sample) * state->volume);
+                    }
+                }
+            }
         }
 
         spaData->chunk->offset = 0;

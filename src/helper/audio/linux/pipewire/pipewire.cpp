@@ -1,4 +1,5 @@
 #if defined(__linux__)
+#include <thread>
 #include "pipewire.hpp"
 #include "forward.hpp"
 #include <chrono>
@@ -307,7 +308,11 @@ namespace Soundux::Objects
             //* The microphone might show up later, for example when a headset gets connected
             if (!thiz->micLoopback && node.mediaClass == "Audio/Source" && !node.isMonitor && !isInternalNode(node))
             {
-                thiz->createMicLoopback();
+                //* Loading a module from the loop callback deadlocks the loop, do it elsewhere
+                std::thread([thiz] {
+                    Lock lock(thiz->loop);
+                    thiz->createMicLoopback();
+                }).detach();
             }
 
             return;
@@ -676,6 +681,16 @@ namespace Soundux::Objects
 
     std::string PipeWire::applicationOf(const Node &node)
     {
+        //* PulseAudio clients carry the binary on the node itself, binding the client and waiting
+        //* for the server for every application freezes the interface while the list is built
+        if (!node.applicationBinary.empty())
+        {
+            return node.applicationBinary;
+        }
+
+        Fancy::fancy.logTime().message() << "Looking up the application of node " << node.clientId
+                                        << ", this waits for the server" << std::endl;
+
         if (!node.clientId)
         {
             return node.applicationBinary;
@@ -868,6 +883,34 @@ namespace Soundux::Objects
 
         return success;
     }
+
+    namespace
+    {
+        //* Reports the calls that keep the interface waiting, they should be instant
+        class SlowCall
+        {
+          public:
+            explicit SlowCall(const char *name)
+                : name(name), start(std::chrono::steady_clock::now())
+            {
+            }
+
+            ~SlowCall()
+            {
+                const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() -
+                                                                                     start)
+                                    .count();
+                if (ms > 200)
+                {
+                    Fancy::fancy.logTime().warning() << name << " waited " << ms << " ms for the server" << std::endl;
+                }
+            }
+
+          private:
+            const char *name;
+            std::chrono::steady_clock::time_point start;
+        };
+    } // namespace
 
     bool PipeWire::setup()
     {
@@ -1181,6 +1224,7 @@ namespace Soundux::Objects
 
     bool PipeWire::passthroughFrom(std::shared_ptr<PlaybackApp> app)
     {
+        SlowCall slow("passthroughFrom");
         Lock lock(loop);
 
         if (!app)
@@ -1204,7 +1248,6 @@ namespace Soundux::Objects
             passthroughLinks.erase(existing);
         }
 
-        sync();
 
         if (!createLinksFor(app->application))
         {
@@ -1219,6 +1262,7 @@ namespace Soundux::Objects
 
     bool PipeWire::inputSoundTo(std::shared_ptr<RecordingApp> app)
     {
+        SlowCall slow("inputSoundTo");
         Lock lock(loop);
 
         if (!app)
@@ -1242,7 +1286,6 @@ namespace Soundux::Objects
             soundInputNodes.erase(existing);
         }
 
-        sync();
 
         return routeToSoundInput(app->application);
     }
@@ -1275,8 +1318,9 @@ namespace Soundux::Objects
 
     std::vector<std::shared_ptr<PlaybackApp>> PipeWire::getPlaybackApps()
     {
+        SlowCall slow("getPlaybackApps");
+        //* Called from the interface thread, waiting for the server here would freeze the window
         Lock lock(loop);
-        sync();
 
         std::vector<std::shared_ptr<PlaybackApp>> rtn;
 
@@ -1306,8 +1350,9 @@ namespace Soundux::Objects
 
     std::vector<std::shared_ptr<RecordingApp>> PipeWire::getRecordingApps()
     {
+        SlowCall slow("getRecordingApps");
+        //* Called from the interface thread, waiting for the server here would freeze the window
         Lock lock(loop);
-        sync();
 
         std::vector<std::shared_ptr<RecordingApp>> rtn;
 
