@@ -1,4 +1,6 @@
 #include "queue.hpp"
+#include <chrono>
+#include <fancy.hpp>
 
 namespace Soundux::Objects
 {
@@ -13,7 +15,22 @@ namespace Soundux::Objects
                 auto front = std::move(*queue.begin());
 
                 lock.unlock();
+                const auto started = std::chrono::steady_clock::now();
+                Fancy::fancy.logTime().message() << "Audio task " << front.first << " started" << std::endl;
+
                 front.second();
+
+                const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                    std::chrono::steady_clock::now() - started)
+                                    .count();
+                Fancy::fancy.logTime().message() << "Audio task " << front.first << " finished in " << ms << " ms"
+                                                 << std::endl;
+                if (ms > 1000)
+                {
+                    Fancy::fancy.logTime().warning() << "Audio task " << front.first
+                                                    << " blocked the audio queue for " << ms << " ms" << std::endl;
+                }
+
                 lock.lock();
 
                 queue.erase(front.first);

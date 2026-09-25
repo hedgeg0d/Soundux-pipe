@@ -1,3 +1,6 @@
+#include <chrono>
+#include <thread>
+#include <cstdlib>
 #include "webview.hpp"
 #include <core/global/globals.hpp>
 #include <cstdint>
@@ -10,6 +13,10 @@
 #include <helper/version/check.hpp>
 #include <helper/ytdl/youtube-dl.hpp>
 
+#if defined(__linux__)
+#include <gtk/gtk.h>
+#endif
+
 #ifdef _WIN32
 #include "../../assets/icon.h"
 #include <helper/misc/misc.hpp>
@@ -19,13 +26,30 @@
 
 namespace Soundux::Objects
 {
+#if defined(__linux__)
+    namespace
+    {
+        void attachWindowKeyEvents();
+    } // namespace
+#endif
+
     void WebView::setup()
     {
         Window::setup();
 
+#if defined(__linux__)
+        //* WebKitGTK sandboxes its web process with bubblewrap, which fails on some setups and takes the
+        //* window down with it. The content we load is our own, so running it without the sandbox is fine.
+        setenv("WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS", "1", 0);
+#endif
+
         webview =
             std::make_shared<Webview::Window>("Soundux", Soundux::Globals::gData.width, Soundux::Globals::gData.height);
         webview->setTitle("Soundux");
+
+#if defined(__linux__)
+        attachWindowKeyEvents();
+#endif
         webview->enableDevTools(std::getenv("SOUNDUX_DEBUG") != nullptr);    // NOLINT
         webview->enableContextMenu(std::getenv("SOUNDUX_DEBUG") != nullptr); // NOLINT
 
@@ -293,8 +317,120 @@ namespace Soundux::Objects
         }));
 #endif
     }
+#if defined(__linux__)
+    namespace
+    {
+        //* Wayland offers no global key grabs, so the keys that reach our window are all we can get there
+        gboolean onWindowKeyEvent(GtkWidget *widget, GdkEvent *event, gpointer)
+        {
+            auto &hotkeys = Globals::gHotKeys;
+
+            //* Keys are fed by the window as well as by the global listener. Doing both is harmless because
+            //* pressed keys are deduplicated, and it keeps setups working where the global listener silently
+            //* sees nothing (Wayland, and XWayland displays which only report their own X11 clients).
+            static bool loggedKeys = false;
+            if (!loggedKeys)
+            {
+                loggedKeys = true;
+                Fancy::fancy.logTime().message() << "Hotkey keys are being received from the window" << std::endl;
+            }
+
+            if (event->type == GDK_KEY_PRESS || event->type == GDK_KEY_RELEASE)
+            {
+                const auto key = static_cast<int>(event->key.hardware_keycode);
+
+                if (auto *display = gtk_widget_get_display(widget); display != nullptr)
+                {
+                    if (auto *keymap = gdk_keymap_get_for_display(display); keymap != nullptr)
+                    {
+                        guint *keyvals = nullptr;
+                        gint entries = 0;
+                        if (gdk_keymap_get_entries_for_keycode(keymap, event->key.hardware_keycode, nullptr, &keyvals,
+                                                               &entries) != FALSE &&
+                            entries > 0)
+                        {
+                            if (auto *name = gdk_keyval_name(keyvals[0]))
+                            {
+                                hotkeys.learnKeyName(key, name);
+                            }
+                        }
+
+                        if (keyvals != nullptr)
+                        {
+                            g_free(keyvals);
+                        }
+                    }
+                }
+
+                if (event->type == GDK_KEY_PRESS)
+                {
+                    hotkeys.onKeyDown(key);
+                }
+                else
+                {
+                    hotkeys.onKeyUp(key);
+                }
+            }
+            else if (event->type == GDK_BUTTON_PRESS || event->type == GDK_BUTTON_RELEASE)
+            {
+                const auto button = static_cast<int>(event->button.button);
+                if (event->type == GDK_BUTTON_PRESS)
+                {
+                    hotkeys.onKeyDown(button);
+                }
+                else
+                {
+                    hotkeys.onKeyUp(button);
+                }
+            }
+
+            return FALSE;
+        }
+
+        void attachWindowKeyEvents()
+        {
+            std::size_t attached = 0;
+            GList *toplevels = gtk_window_list_toplevels();
+            for (GList *it = toplevels; it != nullptr; it = it->next)
+            {
+                if (!GTK_IS_WINDOW(it->data))
+                {
+                    continue;
+                }
+
+                g_signal_connect(it->data, "key-press-event", G_CALLBACK(onWindowKeyEvent), nullptr);
+                g_signal_connect(it->data, "key-release-event", G_CALLBACK(onWindowKeyEvent), nullptr);
+                g_signal_connect(it->data, "button-press-event", G_CALLBACK(onWindowKeyEvent), nullptr);
+                g_signal_connect(it->data, "button-release-event", G_CALLBACK(onWindowKeyEvent), nullptr);
+                attached++;
+            }
+            g_list_free(toplevels);
+
+            Fancy::fancy.logTime().message() << "Listening for hotkey input on " << attached << " window(s)"
+                                             << std::endl;
+        }
+    } // namespace
+#endif
+
+    namespace
+    {
+        //* Stopping the audio backends can wait for their loops, make sure the process still ends
+        void armShutdownWatchdog()
+        {
+            std::thread([] {
+                std::this_thread::sleep_for(std::chrono::seconds(3));
+                Fancy::fancy.logTime().warning() << "Shutdown did not finish, exiting" << std::endl;
+                std::_Exit(0);
+            }).detach();
+        }
+    } // namespace
+
     bool WebView::onClose()
     {
+        Fancy::fancy.logTime().message()
+            << "Close was requested (minimizeToTray: " << Soundux::Globals::gSettings.minimizeToTray << ")" << std::endl;
+        armShutdownWatchdog();
+
         if (Globals::gSettings.minimizeToTray)
         {
             tray->getEntries().at(1)->setText(translations.show);
@@ -396,7 +532,10 @@ namespace Soundux::Objects
         {
             tray->exit();
         }
-        Fancy::fancy.logTime().message() << "UI exited" << std::endl;
+        Fancy::fancy.logTime().message() << "UI exited (the window was closed or the web view stopped)"
+                                        << std::endl;
+
+        armShutdownWatchdog();
     }
     void WebView::onHotKeyReceived(const std::vector<int> &keys)
     {

@@ -1,6 +1,7 @@
 #include "hotkeys.hpp"
 #include <core/global/globals.hpp>
 #include <cstdint>
+#include <fancy.hpp>
 
 namespace Soundux
 {
@@ -27,12 +28,48 @@ namespace Soundux
         {
             pressedKeys.clear();
             notify = status;
+
+            Fancy::fancy.logTime().message() << "Recording hotkeys: " << (status ? "on" : "off") << std::endl;
+        }
+        bool Hotkeys::isNotifying() const
+        {
+            return notify.load();
+        }
+        bool Hotkeys::usesWindowEvents() const
+        {
+            return windowEvents.load();
+        }
+        void Hotkeys::setWindowEventsRequired()
+        {
+            if (!windowEvents.exchange(true))
+            {
+                Fancy::fancy.logTime().message()
+                    << "No global key listener available, keys will be taken from the window instead" << std::endl;
+            }
+        }
+        void Hotkeys::learnKeyName(int key, const std::string &name)
+        {
+            std::lock_guard<std::mutex> lock(keyNamesMutex);
+            keyNames[key] = name;
+        }
+        std::string Hotkeys::lookupKeyName(int key) const
+        {
+            std::lock_guard<std::mutex> lock(keyNamesMutex);
+
+            const auto name = keyNames.find(key);
+            if (name != keyNames.end())
+            {
+                return name->second;
+            }
+
+            return "KEY_" + std::to_string(key);
         }
         void Hotkeys::onKeyUp(int key)
         {
             if (notify && !pressedKeys.empty() &&
                 std::find(pressedKeys.begin(), pressedKeys.end(), key) != pressedKeys.end())
             {
+                Fancy::fancy.logTime().message() << "Recorded hotkey: " << getKeySequence(pressedKeys) << std::endl;
                 Globals::gGui->onHotKeyReceived(pressedKeys);
                 pressedKeys.clear();
             }
@@ -115,6 +152,15 @@ namespace Soundux
             if (notify)
             {
                 return;
+            }
+
+            if (pressedKeys.size() == 1)
+            {
+                Fancy::fancy.logTime().message()
+                    << "Hotkey key pressed: " << getKeyName(key) << " (" << key << "), stop hotkey: "
+                    << (Globals::gSettings.stopHotkey.empty() ? std::string("not set")
+                                                              : getKeySequence(Globals::gSettings.stopHotkey))
+                    << std::endl;
             }
 
             if (!Globals::gSettings.stopHotkey.empty() && (pressedKeys == Globals::gSettings.stopHotkey ||

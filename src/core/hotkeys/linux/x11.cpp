@@ -27,6 +27,7 @@ namespace Soundux::Objects
             if (!(x11Display = XOpenDisplay(":0")))
             {
                 Fancy::fancy.logTime().failure() << "Could not open X11 Display" << std::endl;
+                setWindowEventsRequired();
                 return;
             }
         }
@@ -40,6 +41,7 @@ namespace Soundux::Objects
         if (!XQueryExtension(display, "XInputExtension", &major_op, &event_rtn, &ext_rtn))
         {
             Fancy::fancy.logTime().failure() << "Failed to find XInputExtension" << std::endl;
+            setWindowEventsRequired();
             return;
         }
 
@@ -96,6 +98,11 @@ namespace Soundux::Objects
 
     std::string Hotkeys::getKeyName(const int &key)
     {
+        if (display == nullptr)
+        {
+            return lookupKeyName(key);
+        }
+
         // TODO(curve): There is no Keysym for the mouse buttons and I couldn't find any way to get the name for the
         // mouse buttons so they'll just be named KEY_1 (1 is the Keycode). Maybe someone will be able to help me but I
         // just can't figure it out
@@ -119,12 +126,20 @@ namespace Soundux::Objects
     void Hotkeys::stop()
     {
         kill = true;
-        listener.join();
+        if (listener.joinable())
+        {
+            listener.join();
+        }
     }
 
     void Hotkeys::pressKeys(const std::vector<int> &keys)
     {
         keysToPress = keys;
+        if (display == nullptr)
+        {
+            return;
+        }
+
         for (const auto &key : keys)
         {
             XTestFakeKeyEvent(display, key, True, 0);
@@ -134,6 +149,11 @@ namespace Soundux::Objects
     void Hotkeys::releaseKeys(const std::vector<int> &keys)
     {
         keysToPress.clear();
+        if (display == nullptr)
+        {
+            return;
+        }
+
         for (const auto &key : keys)
         {
             XTestFakeKeyEvent(display, key, False, 0);

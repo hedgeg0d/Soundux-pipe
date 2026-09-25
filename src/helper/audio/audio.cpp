@@ -192,6 +192,7 @@ namespace Soundux::Objects
     void Audio::stopAll()
     {
         auto scoped = playingSounds.scoped();
+        Fancy::fancy.logTime().message() << "Stopping all sounds (" << scoped->size() << " playing)" << std::endl;
         while (!scoped->empty())
         {
             auto &sound = scoped->begin()->second;
@@ -202,6 +203,7 @@ namespace Soundux::Objects
     }
     bool Audio::stop(const std::uint32_t &soundId)
     {
+        Fancy::fancy.logTime().message() << "Stopping sound " << soundId << std::endl;
         auto scoped = playingSounds.scoped();
         if (scoped->find(soundId) != scoped->end())
         {

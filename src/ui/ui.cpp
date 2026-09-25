@@ -505,6 +505,8 @@ namespace Soundux::Objects
     }
     void Window::stopSounds(bool sync)
     {
+        Fancy::fancy.logTime().message() << "Stop was requested (sync: " << std::boolalpha << sync << ")"
+                                        << std::endl;
         if (!sync)
         {
             Globals::gQueue.push_unique(0, []() { Globals::gAudio.stopAll(); });
@@ -545,6 +547,9 @@ namespace Soundux::Objects
                     Globals::gAudio.setVolume(
                         playingSound.id,
                         static_cast<float>(localVolume ? *localVolume : Globals::gSettings.localVolume) / 100.f);
+                    Fancy::fancy.logTime().message()
+                        << "Custom local volume for sound " << id << ": "
+                        << (localVolume ? *localVolume : Globals::gSettings.localVolume) << std::endl;
                 }
             }
 
@@ -570,6 +575,9 @@ namespace Soundux::Objects
                     Globals::gAudio.setVolume(
                         playingSound.id,
                         static_cast<float>(remoteVolume ? *remoteVolume : Globals::gSettings.remoteVolume) / 100.f);
+                    Fancy::fancy.logTime().message()
+                        << "Custom remote volume for sound " << id << ": "
+                        << (remoteVolume ? *remoteVolume : Globals::gSettings.remoteVolume) << std::endl;
                 }
             }
 
@@ -585,6 +593,18 @@ namespace Soundux::Objects
     {
         auto oldSettings = Globals::gSettings;
         Globals::gSettings = settings;
+
+        //* Do not rely on the shutdown to persist changes, the process may not get that far
+        Globals::gConfig.settings = settings;
+        Globals::gConfig.save();
+
+        if (settings.localVolume != oldSettings.localVolume || settings.remoteVolume != oldSettings.remoteVolume)
+        {
+            Fancy::fancy.logTime().message()
+                << "Volume change from the interface: local " << oldSettings.localVolume << " -> "
+                << settings.localVolume << ", remote " << oldSettings.remoteVolume << " -> " << settings.remoteVolume
+                << ", playing sounds: " << Globals::gAudio.getPlayingSounds().size() << std::endl;
+        }
 
         if ((settings.localVolume != oldSettings.localVolume || settings.remoteVolume != oldSettings.remoteVolume) &&
             !Globals::gAudio.getPlayingSounds().empty())
@@ -757,6 +777,9 @@ namespace Soundux::Objects
     }
     std::optional<Sound> Window::setHotkey(const std::uint32_t &id, const std::vector<int> &hotkeys)
     {
+
+        Globals::gConfig.data.set(Globals::gData);
+        Globals::gConfig.save();
         auto sound = Globals::gData.getSound(id);
         if (sound)
         {

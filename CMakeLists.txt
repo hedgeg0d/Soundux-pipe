@@ -116,6 +116,13 @@ target_include_directories(soundux SYSTEM PRIVATE "lib/cpp-httplib")
 
 target_link_libraries(soundux PRIVATE webview nfd tiny-process-library tray guardpp httplib lockpp)
 
+# [[ we use gtk directly for the window key events, the webview does not export its own link line ]]
+if (UNIX)
+    pkg_check_modules(GTK3 REQUIRED gtk+-3.0)
+    target_include_directories(soundux SYSTEM PRIVATE ${GTK3_INCLUDE_DIRS})
+    target_link_libraries(soundux PRIVATE ${GTK3_LIBRARIES})
+endif ()
+
 if (${EMBED_PATH} STREQUAL "OFF")
     message("Web-content will not be embedded") 
     
