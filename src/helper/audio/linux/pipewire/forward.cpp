@@ -44,7 +44,7 @@ bool Soundux::PipeWireApi::setup()
             load(thread_loop_destroy);
             load(thread_loop_lock);
             load(thread_loop_unlock);
-            load(thread_loop_wait);
+            load(thread_loop_timed_wait);
             load(thread_loop_signal);
 
             //* Streams

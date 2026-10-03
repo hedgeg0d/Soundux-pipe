@@ -1,0 +1,12 @@
+const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const path = require("node:path");
+const directory = path.join(process.argv[2], "js");
+const bundle = fs.readFileSync(path.join(directory, fs.readdirSync(directory).find(name => /^app\..*\.js$/.test(name))), "utf8");
+assert(!bundle.includes("disabled:1===e.$store.getters.settings.audioBackend,"), "PipeWire settings still disabled");
+const mutation = bundle.match(/setAudioBackend:function\(e,t\)\{([^}]*)\}/);
+assert(mutation, "backend mutation not found");
+const state = { settings: { audioBackend: 2, muteDuringPlayback: true, useAsDefaultDevice: true } };
+new Function("e", "t", mutation[1])(state, 1);
+assert.deepEqual(state.settings, { audioBackend: 1, muteDuringPlayback: true, useAsDefaultDevice: true });
+console.log("PipeWire settings controls and backend mutation passed");

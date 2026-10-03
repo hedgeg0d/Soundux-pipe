@@ -171,6 +171,7 @@ namespace Soundux::Objects
             "moveTabs", [this](const std::vector<int> &newOrder) { return changeTabOrder(newOrder); }));
         webview->expose(Webview::Function("markFavorite", [this](const std::uint32_t &id, bool favorite) {
             Globals::gData.markFavorite(id, favorite);
+            Globals::gConfig.saveCurrent();
             return Globals::gData.getFavoriteIds();
         }));
         webview->expose(Webview::Function("getFavorites", [this] { return Globals::gData.getFavoriteIds(); }));
@@ -429,14 +430,17 @@ namespace Soundux::Objects
     {
         Fancy::fancy.logTime().message()
             << "Close was requested (minimizeToTray: " << Soundux::Globals::gSettings.minimizeToTray << ")" << std::endl;
-        armShutdownWatchdog();
-
         if (Globals::gSettings.minimizeToTray)
         {
-            tray->getEntries().at(1)->setText(translations.show);
+            if (tray && tray->getEntries().size() > 1)
+            {
+                tray->getEntries().at(1)->setText(translations.show);
+            }
             webview->hide();
             return true;
         }
+        Globals::gConfig.saveCurrent();
+        armShutdownWatchdog();
         return false;
     }
     void WebView::onResize(int width, int height)
@@ -496,6 +500,8 @@ namespace Soundux::Objects
     void WebView::setupTray()
     {
         tray->addEntry(Tray::Button(translations.exit, [this]() {
+            Globals::gConfig.saveCurrent();
+            armShutdownWatchdog();
             tray->exit();
             webview->exit();
         }));

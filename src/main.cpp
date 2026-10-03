@@ -101,9 +101,17 @@ int main(int argc, char **arguments)
     gYtdl.setup();
 
 #if defined(__linux__)
-    if (gAudioBackend && gConfig.settings.useAsDefaultDevice)
+    if (gSettings.useAsDefaultDevice)
     {
-        gAudioBackend->useAsDefault();
+        if (!gAudioBackend || !gAudioBackend->useAsDefault())
+        {
+            gSettings.useAsDefaultDevice = false;
+            Fancy::fancy.logTime().failure() << "Failed to restore Soundux as the default microphone" << std::endl;
+        }
+        else
+        {
+            gSettings.outputs.clear();
+        }
     }
 #endif
 
@@ -127,6 +135,8 @@ int main(int argc, char **arguments)
 
     gGui->mainLoop();
 
+    // Audio teardown can block; save before it, while the shutdown watchdog is still allowing us time.
+    gConfig.saveCurrent();
     gAudio.destroy();
 #if defined(__linux__)
     if (gAudioBackend)
@@ -134,9 +144,5 @@ int main(int argc, char **arguments)
         gAudioBackend->destroy();
     }
 #endif
-    gConfig.data.set(gData);
-    gConfig.settings = gSettings;
-    gConfig.save();
-
     return 0;
 }

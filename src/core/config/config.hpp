@@ -12,9 +12,14 @@ namespace Soundux
             Data data;
             Settings settings;
 
-            void save();
-            void load();
+            bool save() const;
+            bool saveCurrent();
+            bool load();
             static const std::string path;
+
+          private:
+            bool writeAllowed = true;
+            bool write() const;
         };
     } // namespace Objects
 } // namespace Soundux

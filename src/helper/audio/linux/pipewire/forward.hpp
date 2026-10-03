@@ -31,12 +31,12 @@ namespace Soundux
         inline pw_thread_loop *(*thread_loop_new)(const char *, const spa_dict *);
         inline pw_loop *(*thread_loop_get_loop)(pw_thread_loop *);
         inline int (*thread_loop_start)(pw_thread_loop *);
-        inline int (*thread_loop_stop)(pw_thread_loop *);
+        inline void (*thread_loop_stop)(pw_thread_loop *);
         inline void (*thread_loop_destroy)(pw_thread_loop *);
-        inline int (*thread_loop_lock)(pw_thread_loop *);
-        inline int (*thread_loop_unlock)(pw_thread_loop *);
-        inline int (*thread_loop_wait)(pw_thread_loop *, const struct timespec *);
-        inline int (*thread_loop_signal)(pw_thread_loop *, bool);
+        inline void (*thread_loop_lock)(pw_thread_loop *);
+        inline void (*thread_loop_unlock)(pw_thread_loop *);
+        inline int (*thread_loop_timed_wait)(pw_thread_loop *, int);
+        inline void (*thread_loop_signal)(pw_thread_loop *, bool);
 
         //* Streams
         inline pw_stream *(*stream_new_simple)(pw_loop *, const char *, pw_properties *, const pw_stream_events *,

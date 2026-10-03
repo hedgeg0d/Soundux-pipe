@@ -1,5 +1,4 @@
 #if defined(__linux__)
-#include <thread>
 #include "pipewire.hpp"
 #include "forward.hpp"
 #include <chrono>
@@ -10,6 +9,7 @@
 #include <nlohmann/json.hpp>
 #include <sstream>
 #include <stdexcept>
+#include <thread>
 
 namespace Soundux::Objects
 {
@@ -124,7 +124,6 @@ namespace Soundux::Objects
         pw_core_add_listener(core, &listener, &events, &data);
 
         //* Never wait forever, the server might be gone
-        const struct timespec timeout = {1, 0};
         const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
 
         pending = pw_core_sync(core, PW_ID_CORE, 0);
@@ -136,7 +135,7 @@ namespace Soundux::Objects
                 break;
             }
 
-            PipeWireApi::thread_loop_wait(loop, &timeout);
+            PipeWireApi::thread_loop_timed_wait(loop, 1);
         }
 
         spa_hook_remove(&listener);
@@ -161,12 +160,18 @@ namespace Soundux::Objects
         }
     }
 
-    int PipeWire::onMetadataProperty(void *data, [[maybe_unused]] std::uint32_t id, const char *key,
-                                     [[maybe_unused]] const char *type, const char *value)
+    int PipeWire::onMetadataProperty(void *data, std::uint32_t id, const char *key, [[maybe_unused]] const char *type,
+                                     const char *value)
     {
         auto *thiz = static_cast<PipeWire *>(data);
-        if (!thiz || !key)
+        if (!thiz || id != PW_ID_CORE)
         {
+            return 0;
+        }
+        if (!key)
+        {
+            thiz->defaultSourceValue.clear();
+            thiz->configuredSourceValue.clear();
             return 0;
         }
 
@@ -191,7 +196,7 @@ namespace Soundux::Objects
         thiz->defaultSourceValue = value;
 
         auto parsed = nlohmann::json::parse(value, nullptr, false);
-        if (parsed.is_discarded() || !parsed.count("name"))
+        if (!parsed.is_object() || !parsed.contains("name") || !parsed["name"].is_string())
         {
             return 0;
         }
@@ -308,11 +313,7 @@ namespace Soundux::Objects
             //* The microphone might show up later, for example when a headset gets connected
             if (!thiz->micLoopback && node.mediaClass == "Audio/Source" && !node.isMonitor && !isInternalNode(node))
             {
-                //* Loading a module from the loop callback deadlocks the loop, do it elsewhere
-                std::thread([thiz] {
-                    Lock lock(thiz->loop);
-                    thiz->createMicLoopback();
-                }).detach();
+                thiz->requestMicLoopback();
             }
 
             return;
@@ -362,6 +363,7 @@ namespace Soundux::Objects
             thiz->defaultMetadata = nullptr;
             thiz->metadataId = 0;
             thiz->defaultSourceValue.clear();
+            thiz->configuredSourceValue.clear();
         }
 
         {
@@ -454,13 +456,13 @@ namespace Soundux::Objects
             return false;
         }
 
-        const std::string args =
-            "capture.props = { node.name = \"" + std::string(MIC_LOOPBACK_NAME) +
-            "\" media.class = \"Stream/Input/Audio\" target.object = \"" + source + "\" node.target = \"" + source +
-            "\" } "
-            "playback.props = { node.name = \"soundux_mic_playback\" media.class = "
-            "\"Stream/Output/Audio\" target.object = \"" +
-            std::string(SINK_NAME) + "\" node.target = \"" + std::string(SINK_NAME) + "\" }";
+        const std::string args = "capture.props = { node.name = \"" + std::string(MIC_LOOPBACK_NAME) +
+                                 "\" media.class = \"Stream/Input/Audio\" target.object = \"" + source +
+                                 "\" node.target = \"" + source +
+                                 "\" } "
+                                 "playback.props = { node.name = \"soundux_mic_playback\" media.class = "
+                                 "\"Stream/Output/Audio\" target.object = \"" +
+                                 std::string(SINK_NAME) + "\" node.target = \"" + std::string(SINK_NAME) + "\" }";
 
         micLoopback = PipeWireApi::context_load_module(context, "libpipewire-module-loopback", args.c_str(), nullptr);
         if (!micLoopback)
@@ -474,6 +476,13 @@ namespace Soundux::Objects
         return true;
     }
 
+    void PipeWire::requestMicLoopback()
+    {
+        std::lock_guard<std::mutex> lock(micMutex);
+        micPending = true;
+        micCondition.notify_one();
+    }
+
     std::string PipeWire::firstRealSource()
     {
         for (const auto &[id, node] : nodes.copy())
@@ -483,7 +492,7 @@ namespace Soundux::Objects
                 continue;
             }
 
-            return node.name;
+            return node.rawName;
         }
 
         return {};
@@ -523,7 +532,6 @@ namespace Soundux::Objects
 
         PipeWireApi::impl_module_destroy(virtualSource);
         virtualSource = nullptr;
-        sync();
     }
 
     bool PipeWire::setNodeTarget(std::uint32_t nodeId, const std::string &target)
@@ -630,8 +638,8 @@ namespace Soundux::Objects
 
         if (!proxy)
         {
-            Fancy::fancy.logTime().warning() << "Failed to create link from " << outputPort << " to " << inputPort
-                                             << std::endl;
+            Fancy::fancy.logTime().warning()
+                << "Failed to create link from " << outputPort << " to " << inputPort << std::endl;
             PipeWireApi::properties_free(props);
             return std::nullopt;
         }
@@ -641,9 +649,7 @@ namespace Soundux::Objects
 
         pw_proxy_events events{};
         events.version = PW_VERSION_PROXY_EVENTS;
-        events.bound = [](void *data, std::uint32_t id) {
-            *static_cast<std::optional<std::uint32_t> *>(data) = id;
-        };
+        events.bound = [](void *data, std::uint32_t id) { *static_cast<std::optional<std::uint32_t> *>(data) = id; };
         events.error = [](void *data, [[maybe_unused]] int seq, [[maybe_unused]] int res, const char *message) {
             Fancy::fancy.logTime().warning() << "Failed to create link: " << message << std::endl;
             *static_cast<std::optional<std::uint32_t> *>(data) = std::nullopt;
@@ -689,7 +695,7 @@ namespace Soundux::Objects
         }
 
         Fancy::fancy.logTime().message() << "Looking up the application of node " << node.clientId
-                                        << ", this waits for the server" << std::endl;
+                                         << ", this waits for the server" << std::endl;
 
         if (!node.clientId)
         {
@@ -698,8 +704,7 @@ namespace Soundux::Objects
 
         {
             const auto knownClients = clients.copy();
-            if (auto client = knownClients.find(node.clientId);
-                client != knownClients.end() && client->second.resolved)
+            if (auto client = knownClients.find(node.clientId); client != knownClients.end() && client->second.resolved)
             {
                 return client->second.binary;
             }
@@ -890,16 +895,13 @@ namespace Soundux::Objects
         class SlowCall
         {
           public:
-            explicit SlowCall(const char *name)
-                : name(name), start(std::chrono::steady_clock::now())
-            {
-            }
+            explicit SlowCall(const char *name) : name(name), start(std::chrono::steady_clock::now()) {}
 
             ~SlowCall()
             {
-                const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() -
-                                                                                     start)
-                                    .count();
+                const auto ms =
+                    std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start)
+                        .count();
                 if (ms > 200)
                 {
                     Fancy::fancy.logTime().warning() << name << " waited " << ms << " ms for the server" << std::endl;
@@ -992,7 +994,31 @@ namespace Soundux::Objects
         createMicLoopback();
         sync();
 
+        micWorker = std::thread([this] {
+            std::unique_lock<std::mutex> workerLock(micMutex);
+            while (true)
+            {
+                micCondition.wait(workerLock, [this] { return micPending || micStopping; });
+                if (micStopping)
+                {
+                    return;
+                }
+                micPending = false;
+                workerLock.unlock();
+                {
+                    Lock loopLock(loop);
+                    createMicLoopback();
+                }
+                workerLock.lock();
+            }
+        });
+
         return true;
+    }
+
+    PipeWire::~PipeWire()
+    {
+        destroy();
     }
 
     void PipeWire::destroy()
@@ -1003,11 +1029,23 @@ namespace Soundux::Objects
         }
 
         {
+            std::lock_guard<std::mutex> lock(micMutex);
+            micStopping = true;
+            micCondition.notify_one();
+        }
+        if (micWorker.joinable())
+        {
+            micWorker.join();
+        }
+
+        {
             Lock lock(loop);
 
             stopSoundInput();
             stopAllPassthrough();
             revertDefault();
+            // Drain restoration requests before disconnecting. UI toggles stay non-blocking.
+            sync();
 
             if (micLoopback)
             {
@@ -1063,32 +1101,45 @@ namespace Soundux::Objects
             return true;
         }
 
-        if (defaultSource.empty())
+        if (!defaultMetadata || !sinkProxy)
         {
             Fancy::fancy.logTime().failure()
-                << "Could not set default source because original default source is unknown" << std::endl;
+                << "Could not set default source because PipeWire metadata or Soundux sink is unavailable" << std::endl;
             return false;
         }
 
-        if (savedSourceValue.empty() && configuredSourceValue.find(VIRTUAL_SOURCE_NAME) == std::string::npos)
-        {
-            savedSourceValue = configuredSourceValue;
-        }
+        const auto isSoundux = [](const std::string &value) {
+            const auto parsed = nlohmann::json::parse(value, nullptr, false);
+            return parsed.is_object() && parsed.value("name", nlohmann::json{}) == VIRTUAL_SOURCE_NAME;
+        };
+        // A crashed previous instance may have left its configured name behind. Never restore that stale name.
+        savedSourceValue = isSoundux(configuredSourceValue) ? "" : configuredSourceValue;
+        savedDefaultSourceValue = isSoundux(defaultSourceValue) ? "" : defaultSourceValue;
 
         //* Setting the configured source is the same as `wpctl set-default`, wireplumber will update the
         //* effective default.audio.source for us afterwards. The effective key is written as well for session
         //* managers that do not know about the configured one.
         const std::string value = std::string("{\"name\":\"") + VIRTUAL_SOURCE_NAME + "\"}";
 
-        if (!createVirtualSource() || !setMetadataValue("default.configured.audio.source", value) ||
-            !setMetadataValue("default.audio.source", value))
+        if (!createVirtualSource())
         {
-            removeVirtualSource();
             Fancy::fancy.logTime().failure() << "Failed to set default source to soundux" << std::endl;
             return false;
         }
-
+        // Mark ownership before writes so that a partial failure is rolled back too.
         usingAsDefault = true;
+        if (!setMetadataValue("default.configured.audio.source", value))
+        {
+            revertDefault();
+            return false;
+        }
+        configuredSourceValue = value;
+        if (!setMetadataValue("default.audio.source", value))
+        {
+            revertDefault();
+            return false;
+        }
+        defaultSourceValue = value;
         return true;
     }
 
@@ -1101,25 +1152,33 @@ namespace Soundux::Objects
             return true;
         }
 
-        bool success = true;
-        if (savedSourceValue.empty())
-        {
-            success = removeMetadataValue("default.configured.audio.source") &&
-                      removeMetadataValue("default.audio.source");
-        }
-        else
-        {
-            success = setMetadataValue("default.configured.audio.source", savedSourceValue) &&
-                      setMetadataValue("default.audio.source", savedSourceValue);
-        }
+        const auto restore = [this](const std::string &key, std::string &current, const std::string &saved) {
+            const auto parsed = nlohmann::json::parse(current, nullptr, false);
+            if (!parsed.is_object() || parsed.value("name", nlohmann::json{}) != VIRTUAL_SOURCE_NAME)
+            {
+                return true; // The user/session manager selected another device; do not overwrite their choice.
+            }
+            const bool success = saved.empty() ? removeMetadataValue(key) : setMetadataValue(key, saved);
+            if (success)
+            {
+                current = saved;
+            }
+            return success;
+        };
+        const bool configuredRestored =
+            restore("default.configured.audio.source", configuredSourceValue, savedSourceValue);
+        const bool defaultRestored = restore("default.audio.source", defaultSourceValue, savedDefaultSourceValue);
+        const bool success = configuredRestored && defaultRestored;
 
         if (!success)
         {
             Fancy::fancy.logTime().failure() << "Failed to reset default device" << std::endl;
+            return false;
         }
 
         removeVirtualSource();
         savedSourceValue.clear();
+        savedDefaultSourceValue.clear();
         usingAsDefault = false;
 
         return success;
@@ -1192,7 +1251,7 @@ namespace Soundux::Objects
         Lock lock(loop);
 
         Fancy::fancy.logTime().message() << "Stopping all passthrough (" << passthroughLinks.size() << " apps)"
-                                        << std::endl;
+                                         << std::endl;
 
         for (const auto &[appBinary, links] : passthroughLinks)
         {
@@ -1251,7 +1310,6 @@ namespace Soundux::Objects
             passthroughLinks.erase(existing);
         }
 
-
         if (!createLinksFor(app->application))
         {
             Fancy::fancy.logTime().failure() << "Could not pass " << app->application << " through" << std::endl;
@@ -1288,7 +1346,6 @@ namespace Soundux::Objects
             //* The app recreated its streams (for example after switching devices), move the new ones
             soundInputNodes.erase(existing);
         }
-
 
         return routeToSoundInput(app->application);
     }

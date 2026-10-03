@@ -4,22 +4,6 @@
 #include <helper/version/check.hpp>
 #include <nlohmann/json.hpp>
 
-namespace Soundux
-{
-    namespace traits
-    {
-        template <typename T> struct is_optional
-        {
-          private:
-            static std::uint8_t test(...);
-            template <typename O> static auto test(std::optional<O> *) -> std::uint16_t;
-
-          public:
-            static const bool value = sizeof(test(reinterpret_cast<std::decay_t<T> *>(0))) == sizeof(std::uint16_t);
-        };
-    } // namespace traits
-} // namespace Soundux
-
 namespace nlohmann
 {
     template <typename T> struct adl_serializer<std::optional<T>>
@@ -35,11 +19,15 @@ namespace nlohmann
                 j = nullptr;
             }
         }
-        static void from_json(const json &j, const std::optional<T> &obj)
+        static void from_json(const json &j, std::optional<T> &obj)
         {
             if (!j.is_null())
             {
                 obj = j.get<T>();
+            }
+            else
+            {
+                obj.reset();
             }
         }
     }; // namespace nlohmann
@@ -66,7 +54,10 @@ namespace nlohmann
             j.at("hotkeys").get_to(obj.hotkeys);
             j.at("id").get_to(obj.id);
             j.at("path").get_to(obj.path);
-            j.at("modifiedDate").get_to(obj.modifiedDate);
+            if (j.contains("modifiedDate"))
+            {
+                j.at("modifiedDate").get_to(obj.modifiedDate);
+            }
             if (j.find("isFavorite") != j.end())
             {
                 j.at("isFavorite").get_to(obj.isFavorite);
@@ -149,32 +140,30 @@ namespace nlohmann
             };
         }
 
-        template <typename T> static void get_to_safe(const json &j, const std::string &key, T &member) noexcept
+        template <typename T> static void get_to_safe(const json &j, const std::string &key, T &member)
         {
-            if (j.find(key) != j.end())
+            const auto value = j.find(key);
+            if (value == j.end())
             {
-                if constexpr (Soundux::traits::is_optional<T>::value)
-                {
-                    if (j.at(key).type_name() == nlohmann::basic_json(typename T::value_type{}).type_name())
-                    {
-                        if (!j.at(key).is_null())
-                        {
-                            member = j.at(key).get<typename T::value_type>();
-                        }
-                    }
-                }
-                else
-                {
-                    if (j.at(key).type_name() == nlohmann::basic_json(T{}).type_name())
-                    {
-                        j.at(key).get_to(member);
-                    }
-                }
+                return;
+            }
+            try
+            {
+                // Deserialize into a temporary: malformed arrays must not partially replace valid settings.
+                member = value->get<T>();
+            }
+            catch (const json::exception &)
+            {
+                // Older configs may omit fields or contain obsolete types; retain the field's default.
             }
         }
 
         static void from_json(const json &j, Soundux::Objects::Settings &obj)
         {
+            if (!j.is_object())
+            {
+                throw json::type_error::create(302, "settings must be an object", &j);
+            }
             get_to_safe(j, "theme", obj.theme);
             get_to_safe(j, "outputs", obj.outputs);
             get_to_safe(j, "language", obj.language);
@@ -193,6 +182,19 @@ namespace nlohmann
             get_to_safe(j, "useAsDefaultDevice", obj.useAsDefaultDevice);
             get_to_safe(j, "muteDuringPlayback", obj.muteDuringPlayback);
             get_to_safe(j, "allowMultipleOutputs", obj.allowMultipleOutputs);
+
+            if (obj.audioBackend > Soundux::Enums::BackendType::PulseAudio)
+            {
+                obj.audioBackend = Soundux::Enums::BackendType::PipeWire;
+            }
+            if (obj.theme > Soundux::Enums::Theme::Light)
+            {
+                obj.theme = Soundux::Enums::Theme::System;
+            }
+            if (obj.viewMode > Soundux::Enums::ViewMode::EmulatedLaunchpad)
+            {
+                obj.viewMode = Soundux::Enums::ViewMode::List;
+            }
         }
     };
     template <> struct adl_serializer<Soundux::Objects::Tab>

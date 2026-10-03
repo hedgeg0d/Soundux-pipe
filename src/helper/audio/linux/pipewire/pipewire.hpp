@@ -1,13 +1,16 @@
 #pragma once
 #if defined(__linux__)
 #include "../backend.hpp"
+#include <condition_variable>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <set>
 #include <string>
-#include <vector>
+#include <thread>
 #include <var_guard.hpp>
+#include <vector>
 
 #include <pipewire/extensions/metadata.h>
 #include <pipewire/impl-module.h>
@@ -107,6 +110,7 @@ namespace Soundux
             std::string defaultSourceValue;
             std::string configuredSourceValue;
             std::string savedSourceValue;
+            std::string savedDefaultSourceValue;
 
             pw_proxy *sinkProxy = nullptr;
 
@@ -114,6 +118,13 @@ namespace Soundux
             pw_impl_module *micLoopback = nullptr;
             pw_impl_module *virtualSource = nullptr;
             bool usingAsDefault = false;
+
+            // Module creation must happen outside loop callbacks; teardown joins this worker before freeing context.
+            std::thread micWorker;
+            std::mutex micMutex;
+            std::condition_variable micCondition;
+            bool micPending = false;
+            bool micStopping = false;
 
             sxl::var_guard<std::map<std::uint32_t, Node>> nodes;
             sxl::var_guard<std::map<std::uint32_t, Port>> ports;
@@ -131,6 +142,7 @@ namespace Soundux
             void sync();
             bool createNullSink();
             bool createMicLoopback();
+            void requestMicLoopback();
             bool createVirtualSource();
             void removeVirtualSource();
             bool setMetadataValue(const std::string &key, const std::string &value);
@@ -163,6 +175,7 @@ namespace Soundux
 
           public:
             PipeWire() = default;
+            ~PipeWire() override;
             void destroy() override;
 
             bool useAsDefault() override;

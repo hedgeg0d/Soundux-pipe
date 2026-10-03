@@ -21,7 +21,7 @@ jobs:
           pacman -Sy --noconfirm --needed archlinux-keyring
           pacman -Syu --noconfirm --needed base-devel git cmake ninja pkgconf \
             gtk3 webkit2gtk-4.1 libappindicator libwnck3 \
-            libx11 libxi libxtst libice libsm openssl pipewire libpulse
+             libx11 libxi libxtst libice libsm openssl pipewire libpulse nodejs python wireplumber dbus xorg-server-xvfb
 
       - name: Checkout
         uses: actions/checkout@v4
@@ -29,10 +29,13 @@ jobs:
           submodules: recursive
 
       - name: Configure
-        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DSOUNDUX_BUILD_TESTS=ON
 
       - name: Build
         run: cmake --build build
+
+      - name: Regression tests
+        run: ctest --test-dir build --output-on-failure
 
       - name: Package the program
         run: |

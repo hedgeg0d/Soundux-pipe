@@ -9,6 +9,7 @@ set(FULL_VERSION_STRING "0.2.8")
 option(EMBED_PATH "The path used for embedding" "OFF")
 option(USE_FLATPAK "Allows the program to run under flatpak" OFF)
 option(SYSTEM_INSTALL "Install into the system directories instead of /opt/soundux" OFF)
+option(SOUNDUX_BUILD_TESTS "Build Soundux regression tests" OFF)
 
 file(GLOB src
     "src/*.cpp"
@@ -128,12 +129,14 @@ if (${EMBED_PATH} STREQUAL "OFF")
     
     # [[ Copy required files ]]
     #  > Copies frontend files
-    if (MSVC)
-        file(COPY "${CMAKE_SOURCE_DIR}/src/ui/impl/webview/lib/soundux-ui/" 
-            DESTINATION "${CMAKE_SOURCE_DIR}/build/Release/dist")
-    else()
-        file(COPY "${CMAKE_SOURCE_DIR}/src/ui/impl/webview/lib/soundux-ui/" 
-            DESTINATION "${CMAKE_SOURCE_DIR}/build/dist")
+    set(SOUNDUX_FRONTEND_DIR "${CMAKE_BINARY_DIR}/dist")
+    file(COPY "${CMAKE_SOURCE_DIR}/src/ui/impl/webview/lib/soundux-ui/"
+         DESTINATION "${SOUNDUX_FRONTEND_DIR}")
+    include(cmake/PatchFrontend.cmake)
+    soundux_patch_frontend("${SOUNDUX_FRONTEND_DIR}")
+    if(MSVC)
+        add_custom_command(TARGET soundux POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_directory "${SOUNDUX_FRONTEND_DIR}" "$<TARGET_FILE_DIR:soundux>/dist")
     endif()
 else()
     message("Using embed path " ${EMBED_PATH})
@@ -150,6 +153,47 @@ set_target_properties(soundux PROPERTIES
 set_target_properties(soundux PROPERTIES VERSION ${PROJECT_VERSION})
 set_target_properties(soundux PROPERTIES PROJECT_NAME ${PROJECT_NAME})
 
+if(SOUNDUX_BUILD_TESTS AND UNIX)
+    enable_testing()
+    set(test_sources ${src})
+    list(REMOVE_ITEM test_sources "${CMAKE_SOURCE_DIR}/src/main.cpp"
+                                "${CMAKE_SOURCE_DIR}/src/ui/impl/webview/webview.cpp")
+    add_executable(soundux-regression tests/regression.cpp ${test_sources})
+    get_target_property(soundux_includes soundux INCLUDE_DIRECTORIES)
+    get_target_property(soundux_definitions soundux COMPILE_DEFINITIONS)
+    get_target_property(soundux_libraries soundux LINK_LIBRARIES)
+    target_include_directories(soundux-regression SYSTEM PRIVATE ${soundux_includes})
+    target_compile_definitions(soundux-regression PRIVATE ${soundux_definitions})
+    target_link_libraries(soundux-regression PRIVATE ${soundux_libraries})
+    target_compile_features(soundux-regression PRIVATE cxx_std_17)
+    set_target_properties(soundux-regression PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
+    add_test(NAME config-regression COMMAND ${CMAKE_COMMAND} -E env
+             "XDG_CONFIG_HOME=${CMAKE_BINARY_DIR}/test-config" $<TARGET_FILE:soundux-regression>)
+    find_program(NODE_EXECUTABLE node)
+    if(NODE_EXECUTABLE AND SOUNDUX_FRONTEND_DIR)
+        add_test(NAME frontend-regression COMMAND ${NODE_EXECUTABLE}
+                 "${CMAKE_SOURCE_DIR}/tests/frontend.js" "${SOUNDUX_FRONTEND_DIR}")
+    endif()
+    find_package(Python3 COMPONENTS Interpreter QUIET)
+    find_program(PIPEWIRE_EXECUTABLE pipewire)
+    find_program(WIREPLUMBER_EXECUTABLE wireplumber)
+    find_program(PW_DUMP_EXECUTABLE pw-dump)
+    find_program(PW_METADATA_EXECUTABLE pw-metadata)
+    find_program(DBUS_RUN_SESSION_EXECUTABLE dbus-run-session)
+    if(Python3_FOUND AND PIPEWIRE_EXECUTABLE AND WIREPLUMBER_EXECUTABLE AND
+       PW_DUMP_EXECUTABLE AND PW_METADATA_EXECUTABLE AND DBUS_RUN_SESSION_EXECUTABLE)
+        find_program(XVFB_EXECUTABLE Xvfb)
+        set(desktop_test_argument "")
+        if(XVFB_EXECUTABLE)
+            set(desktop_test_argument $<TARGET_FILE:soundux>)
+        endif()
+        add_test(NAME pipewire-regression COMMAND ${DBUS_RUN_SESSION_EXECUTABLE} --
+                 ${Python3_EXECUTABLE} -B "${CMAKE_SOURCE_DIR}/tests/pipewire.py"
+                 $<TARGET_FILE:soundux-regression> ${desktop_test_argument})
+        set_tests_properties(pipewire-regression PROPERTIES TIMEOUT 90)
+    endif()
+endif()
+
 
 if(USE_FLATPAK)
     target_compile_definitions(soundux PRIVATE USE_FLATPAK)
@@ -157,7 +201,7 @@ if(USE_FLATPAK)
 
     install(TARGETS soundux DESTINATION bin)
     if (${EMBED_PATH} STREQUAL "OFF")
-        install(DIRECTORY "${CMAKE_SOURCE_DIR}/build/dist" DESTINATION bin)
+        install(DIRECTORY "${SOUNDUX_FRONTEND_DIR}" DESTINATION bin)
     endif()
 elseif(SYSTEM_INSTALL)
   # [[ Install into the system directories ]]
@@ -166,7 +210,7 @@ elseif(SYSTEM_INSTALL)
 
   install(TARGETS soundux DESTINATION ${CMAKE_INSTALL_BINDIR})
   if (${EMBED_PATH} STREQUAL "OFF")
-    install(DIRECTORY "${CMAKE_SOURCE_DIR}/build/dist" DESTINATION ${CMAKE_INSTALL_DATADIR}/soundux)
+    install(DIRECTORY "${SOUNDUX_FRONTEND_DIR}" DESTINATION ${CMAKE_INSTALL_DATADIR}/soundux)
   endif()
 
   #  > The desktop entry has to start the binary from the binary directory
@@ -184,7 +228,7 @@ else()
   set(CMAKE_INSTALL_PREFIX "/opt/soundux" CACHE PATH "Install path prefix, prepended onto install directories." FORCE)
   install(TARGETS soundux DESTINATION .)
   if (${EMBED_PATH} STREQUAL "OFF")
-    install(DIRECTORY "${CMAKE_SOURCE_DIR}/build/dist" DESTINATION .)
+    install(DIRECTORY "${SOUNDUX_FRONTEND_DIR}" DESTINATION .)
   endif()
   install(FILES "${CMAKE_SOURCE_DIR}/deployment/soundux.desktop" DESTINATION /usr/share/applications)
   install(FILES "${CMAKE_SOURCE_DIR}/deployment/appstream/io.github.Soundux.metainfo.xml" DESTINATION /usr/share/metainfo)

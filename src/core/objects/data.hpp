@@ -41,7 +41,8 @@ namespace Soundux
             void markFavorite(const std::uint32_t &, bool);
 
             void set(const Data &other);
-            Data &operator=(const Data &other) = delete;
+            // Copying a snapshot must not rebuild the global sound indexes (unlike set()).
+            Data &operator=(const Data &other) = default;
         };
     } // namespace Objects
 } // namespace Soundux

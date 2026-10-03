@@ -195,6 +195,7 @@ namespace Soundux::Objects
                     }
                 }
 
+                Globals::gConfig.saveCurrent();
                 return tabs;
             }
             Fancy::fancy.logTime().warning() << "Selected Folder does not exist!" << std::endl;
@@ -472,6 +473,7 @@ namespace Soundux::Objects
     std::vector<Tab> Window::removeTab(const std::uint32_t &id)
     {
         Globals::gData.removeTabById(id);
+        Globals::gConfig.saveCurrent();
         return Globals::gData.getTabs();
     }
     bool Window::stopSound(const std::uint32_t &id)
@@ -539,6 +541,7 @@ namespace Soundux::Objects
         if (sound)
         {
             sound->get().localVolume = localVolume;
+            Globals::gConfig.saveCurrent();
 
             for (auto &playingSound : Globals::gAudio.getPlayingSounds())
             {
@@ -567,6 +570,7 @@ namespace Soundux::Objects
         if (sound)
         {
             sound->get().remoteVolume = remoteVolume;
+            Globals::gConfig.saveCurrent();
 
             for (auto &playingSound : Globals::gAudio.getPlayingSounds())
             {
@@ -593,10 +597,6 @@ namespace Soundux::Objects
     {
         auto oldSettings = Globals::gSettings;
         Globals::gSettings = settings;
-
-        //* Do not rely on the shutdown to persist changes, the process may not get that far
-        Globals::gConfig.settings = settings;
-        Globals::gConfig.save();
 
         if (settings.localVolume != oldSettings.localVolume || settings.remoteVolume != oldSettings.remoteVolume)
         {
@@ -659,44 +659,46 @@ namespace Soundux::Objects
                     }
                 }
             }
-            if (!settings.useAsDefaultDevice && oldSettings.useAsDefaultDevice)
+            if (!settings.useAsDefaultDevice && oldSettings.useAsDefaultDevice &&
+                settings.audioBackend == oldSettings.audioBackend)
             {
                 if (!Globals::gAudioBackend->revertDefault())
                 {
+                    Globals::gSettings.useAsDefaultDevice = true;
                     onError(Enums::ErrorCode::FailedToRevertDefaultSource);
                 }
             }
-            else if (settings.useAsDefaultDevice && !oldSettings.useAsDefaultDevice)
+            else if (settings.useAsDefaultDevice &&
+                     (!oldSettings.useAsDefaultDevice || settings.audioBackend != oldSettings.audioBackend))
             {
-                Globals::gSettings.outputs.clear();
                 if (!Globals::gAudioBackend->stopSoundInput())
                 {
                     onError(Enums::ErrorCode::FailedToMoveBack);
                 }
                 if (!Globals::gAudioBackend->useAsDefault())
                 {
+                    Globals::gSettings.useAsDefaultDevice = false;
                     onError(Enums::ErrorCode::FailedToSetDefaultSource);
                 }
             }
-            if (settings.outputs != oldSettings.outputs)
+            if (Globals::gSettings.useAsDefaultDevice)
             {
-                if (!settings.allowMultipleOutputs && settings.outputs.size() > 1)
-                {
-                    Fancy::fancy.logTime().warning() << "Allow Multiple Outputs is off but got multiple output apps, "
-                                                        "falling back to first output in list"
-                                                     << std::endl;
-
-                    settings.outputs = {settings.outputs.front()};
-                }
-
+                Globals::gSettings.outputs.clear();
+            }
+            else if (!settings.allowMultipleOutputs && settings.outputs.size() > 1)
+            {
+                Globals::gSettings.outputs = {settings.outputs.front()};
+            }
+            if (Globals::gSettings.outputs != oldSettings.outputs)
+            {
                 if (!Globals::gAudioBackend->stopSoundInput())
                 {
                     onError(Enums::ErrorCode::FailedToMoveBack);
                 }
 
-                for (const auto &outputApp : settings.outputs)
+                for (const auto &outputApp : Globals::gSettings.outputs)
                 {
-                    if (!settings.outputs.empty() && !Globals::gAudio.getPlayingSounds().empty())
+                    if (!Globals::gAudio.getPlayingSounds().empty())
                     {
                         if (!Globals::gAudioBackend->inputSoundTo(Globals::gAudioBackend->getRecordingApp(outputApp)))
                         {
@@ -705,6 +707,10 @@ namespace Soundux::Objects
                     }
                 }
             }
+        }
+        else
+        {
+            Globals::gSettings.useAsDefaultDevice = false;
         }
 #elif defined(_WIN32)
         if (Globals::gWinSound)
@@ -734,6 +740,8 @@ namespace Soundux::Objects
             }
         }
 #endif
+        // Persist the final applied settings and live data, not the unvalidated request or an old snapshot.
+        Globals::gConfig.saveCurrent();
         return Globals::gSettings;
     }
     void Window::onHotKeyReceived([[maybe_unused]] const std::vector<int> &keys)
@@ -749,6 +757,7 @@ namespace Soundux::Objects
             auto newTab = Globals::gData.setTab(id, *tab);
             if (newTab)
             {
+                Globals::gConfig.saveCurrent();
                 return newTab;
             }
         }
@@ -766,6 +775,7 @@ namespace Soundux::Objects
             auto newTab = Globals::gData.setTab(id, *tab);
             if (newTab)
             {
+                Globals::gConfig.saveCurrent();
                 return newTab;
             }
         }
@@ -777,13 +787,11 @@ namespace Soundux::Objects
     }
     std::optional<Sound> Window::setHotkey(const std::uint32_t &id, const std::vector<int> &hotkeys)
     {
-
-        Globals::gConfig.data.set(Globals::gData);
-        Globals::gConfig.save();
         auto sound = Globals::gData.getSound(id);
         if (sound)
         {
             sound->get().hotkeys = hotkeys;
+            Globals::gConfig.saveCurrent();
             return sound->get();
         }
         Fancy::fancy.logTime().failure() << "Failed to set hotkey for sound " << id << ", sound does not exist"
@@ -801,6 +809,7 @@ namespace Soundux::Objects
             newTabs.emplace_back(*Globals::gData.getTab(tabId));
         }
         Globals::gData.setTabs(newTabs);
+        Globals::gConfig.saveCurrent();
         return Globals::gData.getTabs();
     }
 #if defined(__linux__)

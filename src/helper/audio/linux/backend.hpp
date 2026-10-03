@@ -32,6 +32,7 @@ namespace Soundux
             AudioBackend() = default;
 
           public:
+            virtual ~AudioBackend() = default;
             static std::shared_ptr<AudioBackend> createInstance(Enums::BackendType);
 
           public:
